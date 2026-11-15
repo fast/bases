@@ -62,6 +62,7 @@ const LO_MASK_URL: v128 = u8x16(
 const ROLL_STD: v128 = u8x16(0, 0, 19, 4, 0xbf, 0xbf, 0xb9, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0);
 const ROLL_URL: v128 = u8x16(0, 0, 17, 4, 0xbf, 0xbf, 0xb9, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0);
 
+#[inline]
 pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
     if input.len() < 16 {
         return (0, 0);
@@ -111,20 +112,26 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
     (chunks * 12, chunks * 16)
 }
 
-pub fn decode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+#[inline]
+pub fn decode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [u8],
+) -> (usize, usize, bool) {
     let chunks = (input.len() / 16).min(output.len() / 12);
     if chunks == 0 {
-        return (0, 0);
+        return (0, 0, false);
     }
 
     let mut input_index = 0;
     let mut output_index = 0;
     let mut done = 0;
+    let mut had_invalid = false;
 
     while done < chunks {
         // SAFETY: `chunks * 16 <= input.len()`, so `input_index + 16 <= input.len()`.
         let v = unsafe { v128_load(input.as_ptr().add(input_index).cast()) };
         let Some(res) = decode_chunk_16::<URL_SAFE_ALPHABET>(v) else {
+            had_invalid = true;
             break;
         };
         let lo = u64x2_extract_lane::<0>(res);
@@ -136,27 +143,30 @@ pub fn decode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
         done += 1;
     }
 
-    (input_index, output_index)
+    (input_index, output_index, had_invalid)
 }
 
+#[inline]
 pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     let chunks = complete_len.min(buf.len()) / 16;
     if chunks == 0 {
-        return (0, 0);
+        return (0, 0, false);
     }
 
     let mut input_index = 0;
     let mut output_index = 0;
     let mut done = 0;
+    let mut had_invalid = false;
 
     while done < chunks {
         // SAFETY: `chunks * 16 <= buf.len()`. `v128_load` reads `buf[input_index..input_index +
         // 16]` completely before writing `buf[output_index..output_index + 12]`.
         let v = unsafe { v128_load(buf.as_ptr().add(input_index).cast()) };
         let Some(res) = decode_chunk_16::<URL_SAFE_ALPHABET>(v) else {
+            had_invalid = true;
             break;
         };
         let lo = u64x2_extract_lane::<0>(res);
@@ -168,7 +178,7 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
         done += 1;
     }
 
-    (input_index, output_index)
+    (input_index, output_index, had_invalid)
 }
 
 #[inline]

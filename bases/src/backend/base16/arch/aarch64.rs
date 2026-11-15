@@ -14,20 +14,30 @@
 
 //! AArch64 NEON Base16 kernels.
 
+use core::arch::aarch64::uint8x8_t;
 use core::arch::aarch64::uint8x16_t;
 use core::arch::aarch64::uint8x16x2_t;
 use core::arch::aarch64::vaddq_u8;
 use core::arch::aarch64::vandq_u8;
+use core::arch::aarch64::vcombine_u8;
 use core::arch::aarch64::vdupq_n_u8;
+use core::arch::aarch64::vget_high_u8;
+use core::arch::aarch64::vget_low_u8;
+use core::arch::aarch64::vld1_u8;
 use core::arch::aarch64::vld1q_u8;
 use core::arch::aarch64::vld2q_u8;
 use core::arch::aarch64::vminq_u8;
 use core::arch::aarch64::vminvq_u8;
 use core::arch::aarch64::vqtbl1q_u8;
 use core::arch::aarch64::vshrq_n_u8;
+use core::arch::aarch64::vsli_n_u8;
 use core::arch::aarch64::vsliq_n_u8;
+use core::arch::aarch64::vst1_u8;
 use core::arch::aarch64::vst1q_u8;
-use core::arch::aarch64::vst2q_u8;
+use core::arch::aarch64::vuzp1_u8;
+use core::arch::aarch64::vuzp2_u8;
+use core::arch::aarch64::vzip1q_u8;
+use core::arch::aarch64::vzip2q_u8;
 
 const UPPER_HEX: [u8; 16] = *b"0123456789ABCDEF";
 const LOWER_HEX: [u8; 16] = *b"0123456789abcdef";
@@ -48,149 +58,251 @@ const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'s
     }
 }
 
+#[inline]
 pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
-    let chunks = (input.len() / 16).min(output.len() / 32);
-    if chunks == 0 {
+    let consumed = input.len().min(output.len() / 2) & !7;
+    if consumed == 0 {
         return (0, 0);
     }
 
-    // SAFETY: `chunks * 16 <= input.len()` and `chunks * 32 <= output.len()`, and NEON is baseline
-    // on aarch64.
-    unsafe { encode_neon::<UPPERCASE>(input.as_ptr(), output.as_mut_ptr(), chunks) };
-    (chunks * 16, chunks * 32)
+    // SAFETY: `consumed <= input.len()`, `consumed * 2 <= output.len()`, and NEON is baseline on
+    // aarch64.
+    unsafe { encode_neon::<UPPERCASE>(input.as_ptr(), output.as_mut_ptr(), consumed) };
+    (consumed, consumed * 2)
 }
 
+#[inline]
 pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
 ) -> (usize, usize) {
-    let chunks = (input.len() / 32).min(output.len() / 16);
-    if chunks == 0 {
+    let chunks_16 = (input.len() / 16).min(output.len() / 8);
+    if chunks_16 == 0 {
         return (0, 0);
     }
 
-    // SAFETY: `chunks * 32 <= input.len()` and `chunks * 16 <= output.len()`, and NEON is baseline
-    // on aarch64.
-    let done = unsafe {
-        decode_neon::<UPPERCASE, STRICT_CASE>(input.as_ptr(), output.as_mut_ptr(), chunks)
+    // SAFETY: `chunks_16 * 16 <= input.len()` and `chunks_16 * 8 <= output.len()`, and NEON is
+    // baseline on aarch64.
+    let done_16 = unsafe {
+        decode_neon::<UPPERCASE, STRICT_CASE>(input.as_ptr(), output.as_mut_ptr(), chunks_16)
     };
-    (done * 32, done * 16)
+    (done_16 * 16, done_16 * 8)
 }
 
+#[inline]
 pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> (usize, usize) {
-    let chunks = buf.len() / 32;
-    if chunks == 0 {
+    let chunks_16 = buf.len() / 16;
+    if chunks_16 == 0 {
         return (0, 0);
     }
 
-    // SAFETY: `chunks * 32 <= buf.len()`, each iteration loads 32 bytes before storing 16 bytes,
-    // and NEON is baseline on aarch64.
-    let done = unsafe { decode_in_place_neon::<UPPERCASE, STRICT_CASE>(buf.as_mut_ptr(), chunks) };
-    (done * 32, done * 16)
+    // SAFETY: `chunks_16 * 16 <= buf.len()`, each iteration loads 32 or 16 bytes before storing
+    // 16 or 8 bytes, and NEON is baseline on aarch64.
+    let done_16 =
+        unsafe { decode_in_place_neon::<UPPERCASE, STRICT_CASE>(buf.as_mut_ptr(), chunks_16) };
+    (done_16 * 16, done_16 * 8)
 }
 
 /// # Safety
 ///
 /// Caller must ensure `in_ptr` is valid for `chunks * 16` reads and `out_ptr` is valid for
 /// `chunks * 32` non-overlapping writes, with NEON enabled.
+#[inline]
 #[target_feature(enable = "neon")]
 unsafe fn encode_neon<const UPPERCASE: bool>(
     mut in_ptr: *const u8,
     mut out_ptr: *mut u8,
-    chunks: usize,
+    len: usize,
 ) {
     let table = if UPPERCASE { &UPPER_HEX } else { &LOWER_HEX };
-    // SAFETY: Caller guarantees `chunks * 16` readable bytes at `in_ptr`, `chunks * 32` writable
-    // bytes at `out_ptr`, and `table` is a 16-byte static array.
+    // SAFETY: Caller guarantees `len` readable bytes at `in_ptr`, `len * 2` writable bytes at
+    // `out_ptr`, `len` is a multiple of 8, and `table` is a 16-byte static array.
     unsafe {
         let hex_tbl = vld1q_u8(table.as_ptr());
         let mask_0f = vdupq_n_u8(0x0f);
-        for _ in 0..chunks {
+        let mut rem = len;
+
+        while rem >= 32 {
+            let v0 = vld1q_u8(in_ptr);
+            let v1 = vld1q_u8(in_ptr.add(16));
+
+            let hi0 = vqtbl1q_u8(hex_tbl, vshrq_n_u8::<4>(v0));
+            let lo0 = vqtbl1q_u8(hex_tbl, vandq_u8(v0, mask_0f));
+            let out0 = vzip1q_u8(hi0, lo0);
+            let out1 = vzip2q_u8(hi0, lo0);
+
+            let hi1 = vqtbl1q_u8(hex_tbl, vshrq_n_u8::<4>(v1));
+            let lo1 = vqtbl1q_u8(hex_tbl, vandq_u8(v1, mask_0f));
+            let out2 = vzip1q_u8(hi1, lo1);
+            let out3 = vzip2q_u8(hi1, lo1);
+
+            vst1q_u8(out_ptr, out0);
+            vst1q_u8(out_ptr.add(16), out1);
+            vst1q_u8(out_ptr.add(32), out2);
+            vst1q_u8(out_ptr.add(48), out3);
+
+            in_ptr = in_ptr.add(32);
+            out_ptr = out_ptr.add(64);
+            rem -= 32;
+        }
+
+        if rem >= 16 {
             let v = vld1q_u8(in_ptr);
-            let hi = vshrq_n_u8::<4>(v);
-            let lo = vandq_u8(v, mask_0f);
-            let hi_ascii = vqtbl1q_u8(hex_tbl, hi);
-            let lo_ascii = vqtbl1q_u8(hex_tbl, lo);
-            vst2q_u8(out_ptr, uint8x16x2_t(hi_ascii, lo_ascii));
+            let hi = vqtbl1q_u8(hex_tbl, vshrq_n_u8::<4>(v));
+            let lo = vqtbl1q_u8(hex_tbl, vandq_u8(v, mask_0f));
+            vst1q_u8(out_ptr, vzip1q_u8(hi, lo));
+            vst1q_u8(out_ptr.add(16), vzip2q_u8(hi, lo));
+
             in_ptr = in_ptr.add(16);
             out_ptr = out_ptr.add(32);
+            rem -= 16;
+        }
+
+        if rem >= 8 {
+            let v8 = vld1_u8(in_ptr);
+            let v = vcombine_u8(v8, v8);
+            let hi = vqtbl1q_u8(hex_tbl, vshrq_n_u8::<4>(v));
+            let lo = vqtbl1q_u8(hex_tbl, vandq_u8(v, mask_0f));
+            vst1q_u8(out_ptr, vzip1q_u8(hi, lo));
         }
     }
 }
 
 /// # Safety
 ///
-/// Caller must ensure `in_ptr` is valid for `chunks * 32` reads and `out_ptr` is valid for
-/// `chunks * 16` non-overlapping writes, with NEON enabled.
+/// Caller must ensure `in_ptr` is valid for `chunks_16 * 16` reads and `out_ptr` is valid for
+/// `chunks_16 * 8` non-overlapping writes, with NEON enabled.
+#[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_neon<const UPPERCASE: bool, const STRICT_CASE: bool>(
     mut in_ptr: *const u8,
     mut out_ptr: *mut u8,
-    chunks: usize,
+    chunks_16: usize,
 ) -> usize {
     let hi_mask_ptr = select_hi_mask::<UPPERCASE, STRICT_CASE>().as_ptr();
-    let mut done = 0;
-    // SAFETY: Caller guarantees `chunks * 32` readable bytes at `in_ptr`, `chunks * 16` writable
-    // bytes at `out_ptr`, and table pointers point to 16-byte static arrays.
+    let mut done_16 = 0;
+    // SAFETY: Caller guarantees `chunks_16 * 16` readable bytes at `in_ptr`, `chunks_16 * 8`
+    // writable bytes at `out_ptr`, and table pointers point to 16-byte static arrays.
     unsafe {
         let hi_mask_tbl = vld1q_u8(hi_mask_ptr);
         let lo_mask_tbl = vld1q_u8(LO_MASK.as_ptr());
         let hi_off_tbl = vld1q_u8(HI_OFFSET.as_ptr());
         let mask_0f = vdupq_n_u8(0x0f);
+        let mut saw_invalid = false;
 
-        while done < chunks {
+        while done_16 + 2 <= chunks_16 {
             let uint8x16x2_t(even, odd) = vld2q_u8(in_ptr);
             let Some(packed) =
                 decode_pair_neon(even, odd, hi_mask_tbl, lo_mask_tbl, hi_off_tbl, mask_0f)
             else {
+                saw_invalid = true;
                 break;
             };
             vst1q_u8(out_ptr, packed);
             in_ptr = in_ptr.add(32);
             out_ptr = out_ptr.add(16);
-            done += 1;
+            done_16 += 2;
+        }
+
+        if !saw_invalid
+            && done_16 < chunks_16
+            && let Some(packed) = decode_16_neon(
+                vld1q_u8(in_ptr),
+                hi_mask_tbl,
+                lo_mask_tbl,
+                hi_off_tbl,
+                mask_0f,
+            )
+        {
+            vst1_u8(out_ptr, packed);
+            done_16 += 1;
         }
     }
-    done
+    done_16
 }
 
 /// # Safety
 ///
-/// Caller must ensure `ptr` is valid for `chunks * 32` reads and writes, with NEON enabled.
+/// Caller must ensure `ptr` is valid for `chunks_16 * 16` reads and writes, with NEON enabled.
+#[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_in_place_neon<const UPPERCASE: bool, const STRICT_CASE: bool>(
     ptr: *mut u8,
-    chunks: usize,
+    chunks_16: usize,
 ) -> usize {
     let hi_mask_ptr = select_hi_mask::<UPPERCASE, STRICT_CASE>().as_ptr();
     let mut in_ptr: *const u8 = ptr;
     let mut out_ptr: *mut u8 = ptr;
-    let mut done = 0;
-    // SAFETY: Caller guarantees `chunks * 32` readable/writable bytes from `ptr`. Each iteration
-    // loads `in_ptr[0..32]` completely before writing `out_ptr[0..16]`, and `out_ptr` lags
-    // behind `in_ptr` by at least `16 * done` bytes so future reads are never overwritten.
+    let mut done_16 = 0;
+    // SAFETY: Caller guarantees `chunks_16 * 16` readable/writable bytes from `ptr`. Each iteration
+    // loads `in_ptr[0..32]` or `in_ptr[0..16]` completely before writing `out_ptr[0..16]` or
+    // `out_ptr[0..8]`, and `out_ptr` lags behind `in_ptr` by at least `8 * done_16` bytes so future
+    // reads are never overwritten.
     unsafe {
         let hi_mask_tbl = vld1q_u8(hi_mask_ptr);
         let lo_mask_tbl = vld1q_u8(LO_MASK.as_ptr());
         let hi_off_tbl = vld1q_u8(HI_OFFSET.as_ptr());
         let mask_0f = vdupq_n_u8(0x0f);
+        let mut saw_invalid = false;
 
-        while done < chunks {
+        while done_16 + 2 <= chunks_16 {
             let uint8x16x2_t(even, odd) = vld2q_u8(in_ptr);
             let Some(packed) =
                 decode_pair_neon(even, odd, hi_mask_tbl, lo_mask_tbl, hi_off_tbl, mask_0f)
             else {
+                saw_invalid = true;
                 break;
             };
             vst1q_u8(out_ptr, packed);
             in_ptr = in_ptr.add(32);
             out_ptr = out_ptr.add(16);
-            done += 1;
+            done_16 += 2;
+        }
+
+        if !saw_invalid
+            && done_16 < chunks_16
+            && let Some(packed) = decode_16_neon(
+                vld1q_u8(in_ptr),
+                hi_mask_tbl,
+                lo_mask_tbl,
+                hi_off_tbl,
+                mask_0f,
+            )
+        {
+            vst1_u8(out_ptr, packed);
+            done_16 += 1;
         }
     }
-    done
+    done_16
+}
+
+/// # Safety
+///
+/// Requires NEON target feature.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn decode_16_neon(
+    chunk: uint8x16_t,
+    hi_mask_tbl: uint8x16_t,
+    lo_mask_tbl: uint8x16_t,
+    hi_off_tbl: uint8x16_t,
+    mask_0f: uint8x16_t,
+) -> Option<uint8x8_t> {
+    let hi = vshrq_n_u8::<4>(chunk);
+    let lo = vandq_u8(chunk, mask_0f);
+    let chk = vandq_u8(vqtbl1q_u8(hi_mask_tbl, hi), vqtbl1q_u8(lo_mask_tbl, lo));
+    if vminvq_u8(chk) == 0 {
+        return None;
+    }
+
+    let nib = vaddq_u8(lo, vqtbl1q_u8(hi_off_tbl, hi));
+    let lo_half = vget_low_u8(nib);
+    let hi_half = vget_high_u8(nib);
+    let even = vuzp1_u8(lo_half, hi_half);
+    let odd = vuzp2_u8(lo_half, hi_half);
+    Some(vsli_n_u8::<4>(odd, even))
 }
 
 /// # Safety

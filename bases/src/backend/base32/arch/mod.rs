@@ -22,6 +22,7 @@ mod aarch64;
 ))]
 mod x86;
 
+#[inline]
 pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -49,6 +50,7 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     (0, 0)
 }
 
+#[inline]
 pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -76,6 +78,7 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
     (0, 0)
 }
 
+#[inline]
 pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
     complete_len: usize,

@@ -81,16 +81,19 @@ const fn select_decode_lut<const UPPERCASE: bool, const STRICT_CASE: bool>() -> 
 }
 
 /// Computes the exact Base16 encoded length for `input_len`.
+#[inline]
 pub const fn encoded_len(input_len: usize) -> Option<usize> {
     input_len.checked_mul(2)
 }
 
 /// Computes an upper bound on the Base16 decoded length for `input_len`.
+#[inline]
 pub const fn max_decoded_len(input_len: usize) -> usize {
     input_len / 2
 }
 
 /// Validates Base16 input length and returns the exact decoded length.
+#[inline]
 pub fn decoded_len(input: &[u8]) -> Result<usize, DecodeError> {
     if input.len() % 2 != 0 {
         return Err(DecodeError::InvalidLength {
@@ -101,6 +104,7 @@ pub fn decoded_len(input: &[u8]) -> Result<usize, DecodeError> {
 }
 
 /// Encodes `input` into `output` using Base16, returning the number of bytes written.
+#[inline]
 pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> usize {
     let required = encoded_len(input.len()).expect("encoded length overflow");
     assert!(output.len() >= required, "output buffer too small");
@@ -128,6 +132,7 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> usize {
 }
 
 /// Decodes Base16 `input` into `output`, returning the number of bytes written.
+#[inline]
 pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -163,6 +168,7 @@ pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
 }
 
 /// Decodes Base16 `buf` in place, returning the number of decoded bytes.
+#[inline]
 pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> Result<usize, DecodeError> {
@@ -193,6 +199,7 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     Ok(written)
 }
 
+#[inline]
 fn encode_scalar_from<const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -228,6 +235,7 @@ fn encode_scalar_from<const UPPERCASE: bool>(
     output_index
 }
 
+#[inline]
 fn decode_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -285,6 +293,7 @@ fn decode_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
     Ok(output_index)
 }
 
+#[inline]
 fn decode_in_place_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
     mut input_index: usize,

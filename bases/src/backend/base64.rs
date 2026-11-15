@@ -50,6 +50,7 @@ const fn make_decode_luts(url_safe: bool) -> [[i32; 256]; 4] {
 }
 
 /// Computes the exact Base64 encoded length for `input_len`.
+#[inline]
 pub const fn encoded_len<const PADDED: bool>(input_len: usize) -> Option<usize> {
     let complete = match (input_len / 3).checked_mul(4) {
         Some(length) => length,
@@ -66,6 +67,7 @@ pub const fn encoded_len<const PADDED: bool>(input_len: usize) -> Option<usize> 
 }
 
 /// Computes an upper bound on the Base64 decoded length for `input_len`.
+#[inline]
 pub const fn max_decoded_len(input_len: usize) -> usize {
     let complete = (input_len / 4) * 3;
     let trailing = match input_len % 4 {
@@ -77,34 +79,39 @@ pub const fn max_decoded_len(input_len: usize) -> usize {
 }
 
 /// Validates Base64 input length and padding shape, returning the exact decoded length.
+#[inline]
 pub fn decoded_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
     decoded_len_and_padding::<PADDED>(input).map(|(len, _)| len)
 }
 
+#[inline]
 fn decoded_len_and_padding<const PADDED: bool>(
     input: &[u8],
 ) -> Result<(usize, usize), DecodeError> {
     if PADDED {
-        if input.len() % 4 != 0 {
-            return Err(DecodeError::InvalidLength {
-                length: input.len(),
-            });
+        let len = input.len();
+        if len % 4 != 0 {
+            return Err(DecodeError::InvalidLength { length: len });
         }
-        if input.is_empty() {
+        if len == 0 {
             return Ok((0, 0));
         }
 
-        let padding = if input[input.len() - 1] == b'=' {
-            trailing_padding(input)
-        } else {
+        let padding = if input[len - 1] != b'=' {
             0
+        } else if input[len - 2] != b'=' {
+            1
+        } else if input[len - 3] != b'=' {
+            2
+        } else {
+            trailing_padding(input)
         };
         if padding > 2 {
             return Err(DecodeError::InvalidPadding {
-                index: input.len() - padding,
+                index: len - padding,
             });
         }
-        Ok((input.len() / 4 * 3 - padding, padding))
+        Ok((len / 4 * 3 - padding, padding))
     } else {
         let trailing = match input.len() % 4 {
             0 => 0,
@@ -121,6 +128,7 @@ fn decoded_len_and_padding<const PADDED: bool>(
 }
 
 /// Encodes `input` into `output` using Base64, returning the number of bytes written.
+#[inline]
 pub fn encode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -151,6 +159,7 @@ pub fn encode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
 }
 
 /// Decodes Base64 `input` into `output`, returning the number of bytes written.
+#[inline]
 pub fn decode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -194,7 +203,7 @@ pub fn decode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         ),
         all(target_arch = "wasm32", target_feature = "simd128"),
     ))]
-    let (input_index, output_index) =
+    let (input_index, output_index, had_invalid) =
         arch::decode::<URL_SAFE_ALPHABET>(&input[..complete_len], output);
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon"),
@@ -204,7 +213,20 @@ pub fn decode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         ),
         all(target_arch = "wasm32", target_feature = "simd128"),
     )))]
-    let (input_index, output_index) = (0, 0);
+    let (input_index, output_index, had_invalid) = (0, 0, false);
+
+    if had_invalid {
+        let lut = if URL_SAFE_ALPHABET {
+            &URL_DECODE_LUTS[3]
+        } else {
+            &STD_DECODE_LUTS[3]
+        };
+        return Err(find_invalid_in_slice(
+            &input[input_index..complete_len],
+            input_index,
+            lut,
+        ));
+    }
 
     let mut output_index = decode_scalar_complete_from::<URL_SAFE_ALPHABET>(
         &input[..complete_len],
@@ -247,6 +269,7 @@ pub fn decode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
 }
 
 /// Decodes Base64 `buf` in place, returning the number of decoded bytes.
+#[inline]
 pub fn decode_in_place<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     buf: &mut [u8],
 ) -> Result<usize, DecodeError> {
@@ -262,7 +285,8 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         ),
         all(target_arch = "wasm32", target_feature = "simd128"),
     ))]
-    let (input_index, output_index) = arch::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len);
+    let (input_index, output_index, had_invalid) =
+        arch::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len);
     #[cfg(not(any(
         all(target_arch = "aarch64", target_feature = "neon"),
         all(
@@ -271,7 +295,20 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         ),
         all(target_arch = "wasm32", target_feature = "simd128"),
     )))]
-    let (input_index, output_index) = (0, 0);
+    let (input_index, output_index, had_invalid) = (0, 0, false);
+
+    if had_invalid {
+        let lut = if URL_SAFE_ALPHABET {
+            &URL_DECODE_LUTS[3]
+        } else {
+            &STD_DECODE_LUTS[3]
+        };
+        return Err(find_invalid_in_slice(
+            &buf[input_index..complete_len],
+            input_index,
+            lut,
+        ));
+    }
 
     let mut output_index = decode_in_place_scalar_complete_from::<URL_SAFE_ALPHABET>(
         buf,
@@ -305,6 +342,7 @@ fn encode_quantum(alphabet: &[u8; 64], w: u32) -> [u8; 4] {
     ]
 }
 
+#[inline]
 fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -333,6 +371,23 @@ fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         output[output_index + 12..output_index + 16].copy_from_slice(&e3);
         input_index += 12;
         output_index += 16;
+    }
+
+    while input_index + 6 <= input.len() {
+        let s = &input[input_index..input_index + 6];
+        let w = u64::from_be_bytes([0, 0, s[0], s[1], s[2], s[3], s[4], s[5]]);
+        output[output_index..output_index + 8].copy_from_slice(&[
+            alphabet[((w >> 42) & 0x3f) as usize],
+            alphabet[((w >> 36) & 0x3f) as usize],
+            alphabet[((w >> 30) & 0x3f) as usize],
+            alphabet[((w >> 24) & 0x3f) as usize],
+            alphabet[((w >> 18) & 0x3f) as usize],
+            alphabet[((w >> 12) & 0x3f) as usize],
+            alphabet[((w >> 6) & 0x3f) as usize],
+            alphabet[(w & 0x3f) as usize],
+        ]);
+        input_index += 6;
+        output_index += 8;
     }
 
     while input_index + 3 <= input.len() {
@@ -379,6 +434,7 @@ fn decode_4_lut(luts: &[[i32; 256]; 4], b0: u8, b1: u8, b2: u8, b3: u8) -> i32 {
         | luts[3][usize::from(b3)]
 }
 
+#[inline]
 fn decode_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -425,6 +481,7 @@ fn decode_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
     Ok(output_index)
 }
 
+#[inline]
 fn decode_in_place_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
@@ -515,6 +572,7 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
     }
 }
 
+#[inline]
 fn find_invalid_in_slice(slice: &[u8], base_index: usize, lut3: &[i32; 256]) -> DecodeError {
     for (offset, &byte) in slice.iter().enumerate() {
         if lut3[usize::from(byte)] < 0 {

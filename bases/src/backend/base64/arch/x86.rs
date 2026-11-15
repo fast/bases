@@ -135,13 +135,21 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
 }
 
 #[cfg(target_feature = "avx2")]
-pub fn decode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+#[inline]
+pub fn decode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [u8],
+) -> (usize, usize, bool) {
     // SAFETY: `target_feature = "avx2"` is enabled at compile time.
     unsafe { decode_avx2::<URL_SAFE_ALPHABET>(input, output) }
 }
 
 #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
-pub fn decode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+#[inline]
+pub fn decode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [u8],
+) -> (usize, usize, bool) {
     if std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_avx2::<URL_SAFE_ALPHABET>(input, output) }
@@ -150,7 +158,7 @@ pub fn decode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
         unsafe { decode_ssse3::<URL_SAFE_ALPHABET>(input, output) }
     } else {
         let _ = (input, output);
-        (0, 0)
+        (0, 0, false)
     }
 }
 
@@ -159,25 +167,31 @@ pub fn decode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
     not(feature = "std"),
     target_feature = "ssse3"
 ))]
-pub fn decode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+#[inline]
+pub fn decode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [u8],
+) -> (usize, usize, bool) {
     // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
     unsafe { decode_ssse3::<URL_SAFE_ALPHABET>(input, output) }
 }
 
 #[cfg(target_feature = "avx2")]
+#[inline]
 pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     // SAFETY: `target_feature = "avx2"` is enabled at compile time.
     unsafe { decode_in_place_avx2::<URL_SAFE_ALPHABET>(buf, complete_len) }
 }
 
 #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+#[inline]
 pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     if std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_in_place_avx2::<URL_SAFE_ALPHABET>(buf, complete_len) }
@@ -186,7 +200,7 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
         unsafe { decode_in_place_ssse3::<URL_SAFE_ALPHABET>(buf, complete_len) }
     } else {
         let _ = (buf, complete_len);
-        (0, 0)
+        (0, 0, false)
     }
 }
 
@@ -195,10 +209,11 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     not(feature = "std"),
     target_feature = "ssse3"
 ))]
+#[inline]
 pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
     unsafe { decode_in_place_ssse3::<URL_SAFE_ALPHABET>(buf, complete_len) }
 }
@@ -493,13 +508,14 @@ unsafe fn store_12_ssse3(out_ptr: *mut u8, res: __m128i) {
 unsafe fn decode_ssse3<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
     output: &mut [u8],
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     let chunks = (input.len() / 16).min(output.len() / 12);
     if chunks == 0 {
-        return (0, 0);
+        return (0, 0, false);
     }
 
     let mut done = 0;
+    let mut had_invalid = false;
     // SAFETY: `chunks * 16 <= input.len()` and `chunks * 12 <= output.len()`, and SSSE3 is enabled.
     unsafe {
         let (hi_mask, lo_mask, roll_tbl, pack_shuf, special_ch, special_adj) =
@@ -525,6 +541,7 @@ unsafe fn decode_ssse3<const URL_SAFE_ALPHABET: bool>(
                 mul_0001_1000,
                 zero,
             ) else {
+                had_invalid = true;
                 break;
             };
             store_12_ssse3(out_ptr, res);
@@ -533,7 +550,7 @@ unsafe fn decode_ssse3<const URL_SAFE_ALPHABET: bool>(
             done += 1;
         }
     }
-    (done * 16, done * 12)
+    (done * 16, done * 12, had_invalid)
 }
 
 /// # Safety
@@ -544,13 +561,14 @@ unsafe fn decode_ssse3<const URL_SAFE_ALPHABET: bool>(
 unsafe fn decode_in_place_ssse3<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     let chunks = complete_len.min(buf.len()) / 16;
     if chunks == 0 {
-        return (0, 0);
+        return (0, 0, false);
     }
 
     let mut done = 0;
+    let mut had_invalid = false;
     let ptr = buf.as_mut_ptr();
     // SAFETY: `chunks * 16 <= buf.len()`. Each iteration loads `in_ptr[0..16]` before writing
     // `out_ptr[0..12]`, and `out_ptr` lags behind `in_ptr` by at least `4 * done` bytes.
@@ -578,6 +596,7 @@ unsafe fn decode_in_place_ssse3<const URL_SAFE_ALPHABET: bool>(
                 mul_0001_1000,
                 zero,
             ) else {
+                had_invalid = true;
                 break;
             };
             store_12_ssse3(out_ptr, res);
@@ -586,7 +605,7 @@ unsafe fn decode_in_place_ssse3<const URL_SAFE_ALPHABET: bool>(
             done += 1;
         }
     }
-    (done * 16, done * 12)
+    (done * 16, done * 12, had_invalid)
 }
 
 /// # Safety
@@ -660,7 +679,7 @@ unsafe fn store_24_avx2(out_ptr: *mut u8, res: __m256i) {
 unsafe fn decode_avx2<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
     output: &mut [u8],
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     let chunks = (input.len() / 32).min(output.len() / 24);
     let mut done = 0;
 
@@ -699,7 +718,7 @@ unsafe fn decode_avx2<const URL_SAFE_ALPHABET: bool>(
                     mul_0001_1000,
                     zero,
                 ) else {
-                    return (done * 32, done * 24);
+                    return (done * 32, done * 24, true);
                 };
                 store_24_avx2(out_ptr, res);
                 in_ptr = in_ptr.add(32);
@@ -710,6 +729,7 @@ unsafe fn decode_avx2<const URL_SAFE_ALPHABET: bool>(
 
         let mut input_index = done * 32;
         let mut output_index = done * 24;
+        let mut had_invalid = false;
         if input_index + 16 <= input.len() && output_index + 12 <= output.len() {
             let mask_0f = _mm_set1_epi8(0x0f);
             let mul_0140 = _mm_set1_epi32(0x0140_0140);
@@ -731,9 +751,11 @@ unsafe fn decode_avx2<const URL_SAFE_ALPHABET: bool>(
                 store_12_ssse3(output.as_mut_ptr().add(output_index), res);
                 input_index += 16;
                 output_index += 12;
+            } else {
+                had_invalid = true;
             }
         }
-        (input_index, output_index)
+        (input_index, output_index, had_invalid)
     }
 }
 
@@ -745,7 +767,7 @@ unsafe fn decode_avx2<const URL_SAFE_ALPHABET: bool>(
 unsafe fn decode_in_place_avx2<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     let limit = complete_len.min(buf.len());
     let chunks = limit / 32;
     let mut done = 0;
@@ -786,7 +808,7 @@ unsafe fn decode_in_place_avx2<const URL_SAFE_ALPHABET: bool>(
                     mul_0001_1000,
                     zero,
                 ) else {
-                    return (done * 32, done * 24);
+                    return (done * 32, done * 24, true);
                 };
                 store_24_avx2(out_ptr, res);
                 in_ptr = in_ptr.add(32);
@@ -797,6 +819,7 @@ unsafe fn decode_in_place_avx2<const URL_SAFE_ALPHABET: bool>(
 
         let mut input_index = done * 32;
         let mut output_index = done * 24;
+        let mut had_invalid = false;
         if input_index + 16 <= limit {
             let mask_0f = _mm_set1_epi8(0x0f);
             let mul_0140 = _mm_set1_epi32(0x0140_0140);
@@ -818,8 +841,10 @@ unsafe fn decode_in_place_avx2<const URL_SAFE_ALPHABET: bool>(
                 store_12_ssse3(ptr.add(output_index), res);
                 input_index += 16;
                 output_index += 12;
+            } else {
+                had_invalid = true;
             }
         }
-        (input_index, output_index)
+        (input_index, output_index, had_invalid)
     }
 }

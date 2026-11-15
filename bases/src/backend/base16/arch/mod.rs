@@ -24,6 +24,7 @@ mod wasm32;
 ))]
 mod x86;
 
+#[inline]
 pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
     if cfg!(miri) {
         return (0, 0);
@@ -53,6 +54,7 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize,
     (0, 0)
 }
 
+#[inline]
 pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -85,6 +87,7 @@ pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     (0, 0)
 }
 
+#[inline]
 pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> (usize, usize) {

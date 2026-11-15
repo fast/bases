@@ -99,6 +99,7 @@ impl<Alphabet, Padding> Hash for Base64<Alphabet, Padding> {
 impl<Alphabet, Padding> Base64<Alphabet, Padding> {
     /// Creates a profile value.
     #[must_use]
+    #[inline]
     pub const fn new() -> Self {
         Self(PhantomData)
     }
@@ -111,6 +112,7 @@ where
 {
     /// Returns the profile's stable human-readable name.
     #[must_use]
+    #[inline]
     pub const fn name() -> &'static str {
         match (Alphabet::URL_SAFE, Padding::PADDED) {
             (false, true) => "base64",
@@ -127,6 +129,7 @@ where
     /// Returns [`EncodeError::LengthOverflow`] if the result cannot be
     /// represented by `usize`. A successful calculation does not guarantee
     /// that a buffer of that size can be allocated.
+    #[inline]
     pub const fn encoded_len(input_len: usize) -> Result<usize, EncodeError> {
         let len = if Padding::PADDED {
             backend::base64::encoded_len::<true>(input_len)
@@ -144,6 +147,7 @@ where
     /// This calculation accepts every `usize` without overflow. It does not
     /// inspect or validate encoded input, including its length or padding.
     #[must_use]
+    #[inline]
     pub const fn max_decoded_len(input_len: usize) -> usize {
         backend::base64::max_decoded_len(input_len)
     }
@@ -155,6 +159,7 @@ where
     /// Returns [`EncodeError::LengthOverflow`] if the encoded length overflows
     /// `usize`, or [`EncodeError::OutputTooSmall`] if `output` is shorter than
     /// the exact encoded length.
+    #[inline]
     pub fn encode_into<'output>(
         input: &[u8],
         output: &'output mut [u8],
@@ -171,6 +176,7 @@ where
     /// Returns [`DecodeSliceError::Decode`] if `input` is malformed, or
     /// [`DecodeSliceError::OutputTooSmall`] if `output` is shorter than the
     /// decoded length.
+    #[inline]
     pub fn decode_into(
         input: impl AsRef<[u8]>,
         output: &mut [u8],
@@ -185,6 +191,7 @@ where
     /// # Errors
     ///
     /// Returns [`DecodeError`] if `buf` is malformed.
+    #[inline]
     pub fn decode_in_place(buf: &mut [u8]) -> Result<&mut [u8], DecodeError> {
         codec::decode_in_place::<Self>(buf)
     }
@@ -195,6 +202,7 @@ where
     ///
     /// Returns [`DecodeError::InvalidLength`] if the decoded length does not
     /// equal `N`, or another [`DecodeError`] variant if `input` is malformed.
+    #[inline]
     pub fn decode_array<const N: usize>(input: impl AsRef<[u8]>) -> Result<[u8; N], DecodeError> {
         codec::decode_array::<Self, N>(input.as_ref())
     }
@@ -203,6 +211,7 @@ where
     #[cfg(feature = "alloc")]
     #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
     #[must_use]
+    #[inline]
     pub fn encode(input: &[u8]) -> String {
         codec::encode::<Self>(input)
     }
@@ -210,6 +219,7 @@ where
     /// Encodes `input` and appends it to `buf`, returning the appended slice.
     #[cfg(feature = "alloc")]
     #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+    #[inline]
     pub fn encode_append<'buf>(input: &[u8], buf: &'buf mut String) -> &'buf str {
         codec::encode_append::<Self>(input, buf)
     }
@@ -221,6 +231,7 @@ where
     /// Returns [`DecodeError`] if `input` is malformed.
     #[cfg(feature = "alloc")]
     #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+    #[inline]
     pub fn decode(input: impl AsRef<[u8]>) -> Result<Vec<u8>, DecodeError> {
         codec::decode::<Self>(input.as_ref())
     }
@@ -235,24 +246,28 @@ where
     /// Returns [`DecodeError`] if `input` is malformed.
     #[cfg(feature = "alloc")]
     #[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+    #[inline]
     pub fn decode_append(input: impl AsRef<[u8]>, buf: &mut Vec<u8>) -> Result<usize, DecodeError> {
         codec::decode_append::<Self>(input.as_ref(), buf)
     }
 
     /// Returns a lazy display adapter for encoded `input`.
     #[must_use]
+    #[inline]
     pub const fn display(input: &[u8]) -> EncodedDisplay<'_, Self> {
         EncodedDisplay::new(input)
     }
 
     /// Creates an incremental encoder for this profile.
     #[must_use]
+    #[inline]
     pub const fn encoder() -> Encoder<Self> {
         Encoder::new()
     }
 
     /// Creates an incremental decoder for this profile.
     #[must_use]
+    #[inline]
     pub const fn decoder() -> Decoder<Self> {
         Decoder::new()
     }
@@ -261,6 +276,7 @@ where
     #[cfg(feature = "std")]
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
+    #[inline]
     pub fn encoder_writer<W: std::io::Write>(writer: W) -> crate::io::EncoderWriter<Self, W> {
         crate::io::EncoderWriter::new(writer)
     }
@@ -269,6 +285,7 @@ where
     #[cfg(feature = "std")]
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
+    #[inline]
     pub fn decoder_reader<R: std::io::Read>(reader: R) -> crate::io::DecoderReader<Self, R> {
         crate::io::DecoderReader::new(reader)
     }
@@ -280,6 +297,7 @@ where
     /// Returns any error reported by `serializer`.
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+    #[inline]
     pub fn serialize<T: ?Sized + AsRef<[u8]>, S: serde_core::Serializer>(
         bytes: &T,
         serializer: S,
@@ -295,6 +313,7 @@ where
     /// string for this profile or does not decode to `N` bytes.
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+    #[inline]
     pub fn deserialize_array<'de, D: serde_core::Deserializer<'de>, const N: usize>(
         deserializer: D,
     ) -> Result<[u8; N], D::Error> {
@@ -309,6 +328,7 @@ where
     /// string for this profile.
     #[cfg(all(feature = "serde", feature = "alloc"))]
     #[cfg_attr(docsrs, doc(cfg(all(feature = "serde", feature = "alloc"))))]
+    #[inline]
     pub fn deserialize<'de, D: serde_core::Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Vec<u8>, D::Error> {
@@ -326,6 +346,7 @@ where
     const ENCODED_QUANTUM: usize = 4;
     const PADDED: bool = Padding::PADDED;
 
+    #[inline]
     fn encoded_len_impl(input_len: usize) -> Option<usize> {
         if Padding::PADDED {
             backend::base64::encoded_len::<true>(input_len)
@@ -334,10 +355,12 @@ where
         }
     }
 
+    #[inline]
     fn max_decoded_len_impl(input_len: usize) -> usize {
         backend::base64::max_decoded_len(input_len)
     }
 
+    #[inline]
     fn decoded_len_impl(input: &[u8]) -> Result<usize, DecodeError> {
         if Padding::PADDED {
             backend::base64::decoded_len::<true>(input)
@@ -346,6 +369,7 @@ where
         }
     }
 
+    #[inline]
     fn encode_impl(input: &[u8], output: &mut [u8]) -> usize {
         match (Alphabet::URL_SAFE, Padding::PADDED) {
             (false, false) => backend::base64::encode::<false, false>(input, output),
@@ -355,6 +379,7 @@ where
         }
     }
 
+    #[inline]
     fn decode_impl(input: &[u8], output: &mut [u8]) -> Result<usize, DecodeError> {
         match (Alphabet::URL_SAFE, Padding::PADDED) {
             (false, false) => backend::base64::decode::<false, false>(input, output),
@@ -364,6 +389,7 @@ where
         }
     }
 
+    #[inline]
     fn decode_in_place_impl(buf: &mut [u8]) -> Result<usize, DecodeError> {
         match (Alphabet::URL_SAFE, Padding::PADDED) {
             (false, false) => backend::base64::decode_in_place::<false, false>(buf),
@@ -373,6 +399,7 @@ where
         }
     }
 
+    #[inline]
     fn decoded_padding_reduction(padding: usize) -> Option<usize> {
         match padding {
             0 => Some(0),

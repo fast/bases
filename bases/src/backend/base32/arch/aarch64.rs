@@ -95,6 +95,7 @@ const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'s
     }
 }
 
+#[inline]
 pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -115,6 +116,7 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     (chunks * 10, chunks * 16)
 }
 
+#[inline]
 pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -135,6 +137,7 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
     (done * 16, done * 10)
 }
 
+#[inline]
 pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
     complete_len: usize,
@@ -156,6 +159,7 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
 ///
 /// Caller must ensure `in_ptr` is valid for `(chunks - 1) * 10 + 16` reads (`chunks > 0`) and
 /// `out_ptr` is valid for `chunks * 16` non-overlapping writes, with NEON enabled.
+#[inline]
 #[target_feature(enable = "neon")]
 unsafe fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     mut in_ptr: *const u8,
@@ -191,6 +195,7 @@ unsafe fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
 ///
 /// Caller must ensure `in_ptr` is valid for `chunks * 16` reads and `out_ptr` is valid for
 /// `chunks * 10` non-overlapping writes, with NEON enabled.
+#[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     mut in_ptr: *const u8,
@@ -248,6 +253,7 @@ unsafe fn decode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
 /// # Safety
 ///
 /// Caller must ensure `ptr` is valid for `chunks * 16` reads and writes, with NEON enabled.
+#[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_in_place_neon<
     const EXTENDED_HEX: bool,

@@ -170,8 +170,9 @@ impl<C: Codec> Encoder<C> {
         }
 
         debug_assert_eq!(output_index, required);
-        Ok(core::str::from_utf8_mut(&mut output[..output_index])
-            .expect("binary-to-text backends must produce valid ASCII"))
+        #[allow(unsafe_code)]
+        // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..output_index]`.
+        Ok(unsafe { crate::codec::ascii_to_str_mut(&mut output[..output_index]) })
     }
 
     /// Finishes the stream, returning the final encoded prefix of `output`.

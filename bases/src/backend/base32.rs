@@ -118,6 +118,7 @@ const fn select_decode_lut<
 }
 
 /// Computes the exact Base32 encoded length for `input_len`.
+#[inline]
 pub const fn encoded_len<const PADDED: bool>(input_len: usize) -> Option<usize> {
     let complete = match (input_len / 5).checked_mul(8) {
         Some(length) => length,
@@ -136,6 +137,7 @@ pub const fn encoded_len<const PADDED: bool>(input_len: usize) -> Option<usize> 
 }
 
 /// Computes an upper bound on the Base32 decoded length for `input_len`.
+#[inline]
 pub const fn max_decoded_len(input_len: usize) -> usize {
     let complete = (input_len / 8) * 5;
     let trailing = (input_len % 8) * 5 / 8;
@@ -143,10 +145,12 @@ pub const fn max_decoded_len(input_len: usize) -> usize {
 }
 
 /// Validates Base32 input length and padding shape, returning the exact decoded length.
+#[inline]
 pub fn decoded_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
     decoded_len_and_padding::<PADDED>(input).map(|(len, _)| len)
 }
 
+#[inline]
 fn decoded_len_and_padding<const PADDED: bool>(
     input: &[u8],
 ) -> Result<(usize, usize), DecodeError> {
@@ -196,6 +200,7 @@ fn decoded_len_and_padding<const PADDED: bool>(
 }
 
 /// Encodes `input` into `output` using Base32, returning the number of bytes written.
+#[inline]
 pub fn encode<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -224,6 +229,7 @@ pub fn encode<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: boo
 }
 
 /// Decodes Base32 `input` into `output`, returning the number of bytes written.
+#[inline]
 pub fn decode<
     const EXTENDED_HEX: bool,
     const PADDED: bool,
@@ -319,6 +325,7 @@ pub fn decode<
 }
 
 /// Decodes Base32 `buf` in place, returning the number of decoded bytes.
+#[inline]
 pub fn decode_in_place<
     const EXTENDED_HEX: bool,
     const PADDED: bool,
