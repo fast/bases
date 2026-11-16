@@ -611,6 +611,7 @@ fn decode_in_place_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
     Ok(output_index)
 }
 
+#[inline]
 fn decode_tail<const URL_SAFE_ALPHABET: bool>(
     trailing: &[u8],
     base_index: usize,
@@ -624,8 +625,10 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
 
     match trailing {
         [first, second] => {
-            let v0 = decode_value(*first, base_index, lut)?;
-            let v1 = decode_value(*second, base_index + 1, lut)?;
+            let [v0, v1] = [*first, *second].map(|byte| lut[usize::from(byte)]);
+            if (v0 | v1) == INVALID_SYMBOL {
+                return Err(find_invalid_in_slice(trailing, base_index, lut));
+            }
             if v1 & 0x0f != 0 {
                 return Err(DecodeError::NonCanonical {
                     index: base_index + 1,
@@ -635,9 +638,10 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
             Ok(1)
         }
         [first, second, third] => {
-            let v0 = decode_value(*first, base_index, lut)?;
-            let v1 = decode_value(*second, base_index + 1, lut)?;
-            let v2 = decode_value(*third, base_index + 2, lut)?;
+            let [v0, v1, v2] = [*first, *second, *third].map(|byte| lut[usize::from(byte)]);
+            if (v0 | v1 | v2) == INVALID_SYMBOL {
+                return Err(find_invalid_in_slice(trailing, base_index, lut));
+            }
             if v2 & 0x03 != 0 {
                 return Err(DecodeError::NonCanonical {
                     index: base_index + 2,
@@ -659,16 +663,6 @@ fn find_invalid_in_slice(slice: &[u8], base_index: usize, lut: &[u8; 256]) -> De
         }
     }
     unreachable!("called only when at least one byte in slice is invalid")
-}
-
-#[inline]
-fn decode_value(byte: u8, index: usize, lut: &[u8; 256]) -> Result<u8, DecodeError> {
-    let val = lut[usize::from(byte)];
-    if val != INVALID_SYMBOL {
-        Ok(val)
-    } else {
-        Err(backend::invalid_byte_error(byte, index))
-    }
 }
 
 #[cfg(test)]
