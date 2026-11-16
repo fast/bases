@@ -16,14 +16,6 @@
 
 use crate::DecodeError;
 
-#[cfg(any(
-    all(target_arch = "aarch64", target_feature = "neon"),
-    all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-    ),
-    all(target_arch = "wasm32", target_feature = "simd128"),
-))]
 #[allow(unsafe_code)]
 mod arch;
 
@@ -109,25 +101,7 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> usize {
     let required = encoded_len(input.len()).expect("encoded length overflow");
     assert!(output.len() >= required, "output buffer too small");
 
-    #[cfg(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-        all(target_arch = "wasm32", target_feature = "simd128"),
-    ))]
     let (input_index, output_index) = arch::encode::<UPPERCASE>(input, output);
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-        all(target_arch = "wasm32", target_feature = "simd128"),
-    )))]
-    let (input_index, output_index) = (0, 0);
-
     encode_scalar_from::<UPPERCASE>(input, output, input_index, output_index)
 }
 
@@ -145,25 +119,7 @@ pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     let required = input.len() / 2;
     assert!(output.len() >= required, "output buffer too small");
 
-    #[cfg(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-        all(target_arch = "wasm32", target_feature = "simd128"),
-    ))]
     let (input_index, output_index) = arch::decode::<UPPERCASE, STRICT_CASE>(input, output);
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-        all(target_arch = "wasm32", target_feature = "simd128"),
-    )))]
-    let (input_index, output_index) = (0, 0);
-
     decode_scalar_from::<UPPERCASE, STRICT_CASE>(input, output, input_index, output_index)
 }
 
@@ -173,26 +129,7 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> Result<usize, DecodeError> {
     let required = decoded_len(buf)?;
-
-    #[cfg(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-        all(target_arch = "wasm32", target_feature = "simd128"),
-    ))]
     let (input_index, output_index) = arch::decode_in_place::<UPPERCASE, STRICT_CASE>(buf);
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-        all(target_arch = "wasm32", target_feature = "simd128"),
-    )))]
-    let (input_index, output_index) = (0, 0);
-
     let written =
         decode_in_place_scalar_from::<UPPERCASE, STRICT_CASE>(buf, input_index, output_index)?;
     debug_assert_eq!(written, required);
@@ -236,6 +173,43 @@ fn encode_scalar_from<const UPPERCASE: bool>(
 }
 
 #[inline]
+fn decode_chunk_8(lut: &[u8; 256], chunk: &[u8; 8]) -> Option<[u8; 4]> {
+    let d0 = lut[usize::from(chunk[0])];
+    let d1 = lut[usize::from(chunk[1])];
+    let d2 = lut[usize::from(chunk[2])];
+    let d3 = lut[usize::from(chunk[3])];
+    let d4 = lut[usize::from(chunk[4])];
+    let d5 = lut[usize::from(chunk[5])];
+    let d6 = lut[usize::from(chunk[6])];
+    let d7 = lut[usize::from(chunk[7])];
+    if (d0 | d1 | d2 | d3 | d4 | d5 | d6 | d7) & 0xf0 != 0 {
+        return None;
+    }
+    Some([
+        (d0 << 4) | d1,
+        (d2 << 4) | d3,
+        (d4 << 4) | d5,
+        (d6 << 4) | d7,
+    ])
+}
+
+#[inline]
+fn decode_pair(lut: &[u8; 256], b0: u8, b1: u8, index: usize) -> Result<u8, DecodeError> {
+    let d0 = lut[usize::from(b0)];
+    if d0 & 0xf0 != 0 {
+        return Err(DecodeError::InvalidByte { index, byte: b0 });
+    }
+    let d1 = lut[usize::from(b1)];
+    if d1 & 0xf0 != 0 {
+        return Err(DecodeError::InvalidByte {
+            index: index + 1,
+            byte: b1,
+        });
+    }
+    Ok((d0 << 4) | d1)
+}
+
+#[inline]
 fn decode_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -245,47 +219,20 @@ fn decode_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
     let lut = select_decode_lut::<UPPERCASE, STRICT_CASE>();
 
     while input_index + 8 <= input.len() {
-        let chunk = &input[input_index..input_index + 8];
-        let d0 = lut[usize::from(chunk[0])];
-        let d1 = lut[usize::from(chunk[1])];
-        let d2 = lut[usize::from(chunk[2])];
-        let d3 = lut[usize::from(chunk[3])];
-        let d4 = lut[usize::from(chunk[4])];
-        let d5 = lut[usize::from(chunk[5])];
-        let d6 = lut[usize::from(chunk[6])];
-        let d7 = lut[usize::from(chunk[7])];
-        if (d0 | d1 | d2 | d3 | d4 | d5 | d6 | d7) & 0xf0 != 0 {
+        let chunk: &[u8; 8] = input[input_index..input_index + 8]
+            .try_into()
+            .expect("8-byte slice fits in [u8; 8]");
+        let Some(decoded) = decode_chunk_8(lut, chunk) else {
             break;
-        }
-        let decoded = [
-            (d0 << 4) | d1,
-            (d2 << 4) | d3,
-            (d4 << 4) | d5,
-            (d6 << 4) | d7,
-        ];
+        };
         output[output_index..output_index + 4].copy_from_slice(&decoded);
         input_index += 8;
         output_index += 4;
     }
 
     while input_index + 2 <= input.len() {
-        let b0 = input[input_index];
-        let d0 = lut[usize::from(b0)];
-        if d0 & 0xf0 != 0 {
-            return Err(DecodeError::InvalidByte {
-                index: input_index,
-                byte: b0,
-            });
-        }
-        let b1 = input[input_index + 1];
-        let d1 = lut[usize::from(b1)];
-        if d1 & 0xf0 != 0 {
-            return Err(DecodeError::InvalidByte {
-                index: input_index + 1,
-                byte: b1,
-            });
-        }
-        output[output_index] = (d0 << 4) | d1;
+        output[output_index] =
+            decode_pair(lut, input[input_index], input[input_index + 1], input_index)?;
         input_index += 2;
         output_index += 1;
     }
@@ -305,46 +252,16 @@ fn decode_in_place_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
         let chunk: [u8; 8] = buf[input_index..input_index + 8]
             .try_into()
             .expect("8-byte slice fits in [u8; 8]");
-        let d0 = lut[usize::from(chunk[0])];
-        let d1 = lut[usize::from(chunk[1])];
-        let d2 = lut[usize::from(chunk[2])];
-        let d3 = lut[usize::from(chunk[3])];
-        let d4 = lut[usize::from(chunk[4])];
-        let d5 = lut[usize::from(chunk[5])];
-        let d6 = lut[usize::from(chunk[6])];
-        let d7 = lut[usize::from(chunk[7])];
-        if (d0 | d1 | d2 | d3 | d4 | d5 | d6 | d7) & 0xf0 != 0 {
+        let Some(decoded) = decode_chunk_8(lut, &chunk) else {
             break;
-        }
-        let decoded = [
-            (d0 << 4) | d1,
-            (d2 << 4) | d3,
-            (d4 << 4) | d5,
-            (d6 << 4) | d7,
-        ];
+        };
         buf[output_index..output_index + 4].copy_from_slice(&decoded);
         input_index += 8;
         output_index += 4;
     }
 
     while input_index + 2 <= buf.len() {
-        let b0 = buf[input_index];
-        let d0 = lut[usize::from(b0)];
-        if d0 & 0xf0 != 0 {
-            return Err(DecodeError::InvalidByte {
-                index: input_index,
-                byte: b0,
-            });
-        }
-        let b1 = buf[input_index + 1];
-        let d1 = lut[usize::from(b1)];
-        if d1 & 0xf0 != 0 {
-            return Err(DecodeError::InvalidByte {
-                index: input_index + 1,
-                byte: b1,
-            });
-        }
-        buf[output_index] = (d0 << 4) | d1;
+        buf[output_index] = decode_pair(lut, buf[input_index], buf[input_index + 1], input_index)?;
         input_index += 2;
         output_index += 1;
     }

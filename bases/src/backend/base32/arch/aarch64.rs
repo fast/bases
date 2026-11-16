@@ -150,10 +150,11 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
         return (0, 0);
     }
 
+    let ptr = buf.as_mut_ptr();
     // SAFETY: `chunks * 16 <= buf.len()`. Every iteration loads 16 bytes before storing 10 bytes,
     // and `out_ptr` advances by 10 while `in_ptr` advances by 16.
     let done = unsafe {
-        decode_in_place_neon::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf.as_mut_ptr(), chunks)
+        decode_neon::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(ptr.cast_const(), ptr, chunks)
     };
     (done * 16, done * 10)
 }
@@ -196,8 +197,10 @@ unsafe fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
 
 /// # Safety
 ///
-/// Caller must ensure `in_ptr` is valid for `chunks * 16` reads and `out_ptr` is valid for
-/// `chunks * 10` non-overlapping writes, with NEON enabled.
+/// Caller must ensure `in_ptr` is valid for `chunks * 16` reads, `out_ptr` is valid for
+/// `chunks * 10` writes, and NEON is enabled. `out_ptr` must either not overlap `in_ptr` or equal
+/// `in_ptr` (each iteration loads 16 input bytes before writing 10 output bytes, so `out_ptr` never
+/// overtakes unread input).
 #[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
@@ -216,71 +219,7 @@ unsafe fn decode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
     let mut done = 0;
 
     // SAFETY: Caller guarantees `chunks * 16` reads at `in_ptr`, `chunks * 10` writes at `out_ptr`,
-    // and static lookup tables are 16 bytes each.
-    unsafe {
-        let hi_mask_tbl = vld1q_u8(hi_mask_ptr);
-        let lo_mask_tbl = vld1q_u8(lo_mask_ptr);
-        let roll_tbl = vld1q_u8(roll_ptr);
-        let pack_shuf = vld1q_u8(PACK_SHUF.as_ptr());
-        let mask_0f = vdupq_n_u8(0x0f);
-        let mask_001f = vdupq_n_u16(0x001f);
-        let mask_03ff = vdupq_n_u32(0x03ff);
-
-        while done < chunks {
-            let v = vld1q_u8(in_ptr);
-            let Some(res) = decode_chunk_16_neon(
-                v,
-                hi_mask_tbl,
-                lo_mask_tbl,
-                roll_tbl,
-                pack_shuf,
-                mask_0f,
-                mask_001f,
-                mask_03ff,
-            ) else {
-                break;
-            };
-            vst1_u8(out_ptr, vget_low_u8(res));
-            ptr::write_unaligned(
-                out_ptr.add(8).cast::<u16>(),
-                vgetq_lane_u16::<4>(vreinterpretq_u16_u8(res)),
-            );
-            in_ptr = in_ptr.add(16);
-            out_ptr = out_ptr.add(10);
-            done += 1;
-        }
-    }
-    done
-}
-
-/// # Safety
-///
-/// Caller must ensure `ptr` is valid for `chunks * 16` reads and writes, with NEON enabled.
-#[inline]
-#[target_feature(enable = "neon")]
-unsafe fn decode_in_place_neon<
-    const EXTENDED_HEX: bool,
-    const UPPERCASE: bool,
-    const STRICT_CASE: bool,
->(
-    ptr: *mut u8,
-    chunks: usize,
-) -> usize {
-    let hi_mask_ptr = select_hi_mask::<UPPERCASE, STRICT_CASE>().as_ptr();
-    let lo_mask_ptr = if EXTENDED_HEX {
-        &LO_MASK_HEX
-    } else {
-        &LO_MASK_STD
-    }
-    .as_ptr();
-    let roll_ptr = if EXTENDED_HEX { &ROLL_HEX } else { &ROLL_STD }.as_ptr();
-    let mut in_ptr: *const u8 = ptr;
-    let mut out_ptr: *mut u8 = ptr;
-    let mut done = 0;
-
-    // SAFETY: Caller guarantees `chunks * 16` readable/writable bytes from `ptr`. Each iteration
-    // loads `in_ptr[0..16]` completely before writing `out_ptr[0..10]`, and `out_ptr` lags behind
-    // `in_ptr` by at least `6 * done` bytes.
+    // non-overtaking pointer advancement for in-place decoding, and 16-byte static lookup tables.
     unsafe {
         let hi_mask_tbl = vld1q_u8(hi_mask_ptr);
         let lo_mask_tbl = vld1q_u8(lo_mask_ptr);

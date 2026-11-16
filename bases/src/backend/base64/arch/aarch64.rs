@@ -125,11 +125,47 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
         return (0, 0, false);
     }
 
+    let ptr = buf.as_mut_ptr();
     // SAFETY: `limit_16 * 16 <= buf.len()`. Every iteration loads 64 or 16 input bytes before
     // storing 48 or 12 decoded bytes, and `out_ptr` advances strictly slower than `in_ptr`.
     let (done_16, had_invalid) =
-        unsafe { decode_in_place_neon::<URL_SAFE_ALPHABET>(buf.as_mut_ptr(), limit_16) };
+        unsafe { decode_neon::<URL_SAFE_ALPHABET>(ptr.cast_const(), ptr, limit_16) };
     (done_16 * 16, done_16 * 12, had_invalid)
+}
+
+/// # Safety
+///
+/// Caller must ensure `in_ptr` is valid for `rem_total_in >= 12` reads and NEON is enabled.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn load_12_neon(in_ptr: *const u8, rem_total_in: usize) -> uint8x16_t {
+    // SAFETY: Caller guarantees at least `rem_total_in >= 12` readable bytes at `in_ptr`.
+    unsafe {
+        if rem_total_in >= 16 {
+            vld1q_u8(in_ptr)
+        } else {
+            let lo = vld1_u8(in_ptr);
+            let hi32 = ptr::read_unaligned(in_ptr.add(8).cast::<u32>());
+            let hi = vreinterpret_u8_u32(vset_lane_u32::<0>(hi32, vdup_n_u32(0)));
+            vcombine_u8(lo, hi)
+        }
+    }
+}
+
+/// # Safety
+///
+/// Caller must ensure `out_ptr` is valid for 12 writes and NEON is enabled.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn store_12_neon(out_ptr: *mut u8, packed: uint8x16_t) {
+    // SAFETY: Caller guarantees `out_ptr` is valid for 12 writes.
+    unsafe {
+        vst1_u8(out_ptr, vget_low_u8(packed));
+        ptr::write_unaligned(
+            out_ptr.add(8).cast::<u32>(),
+            vgetq_lane_u32::<2>(vreinterpretq_u32_u8(packed)),
+        );
+    }
 }
 
 /// # Safety
@@ -186,14 +222,7 @@ unsafe fn encode_neon<const URL_SAFE_ALPHABET: bool>(
             let shr_b = vld1q_s8(ENC_SHR_B.as_ptr());
 
             while rem_in >= 12 {
-                let v = if rem_total_in >= 16 {
-                    vld1q_u8(in_ptr)
-                } else {
-                    let lo = vld1_u8(in_ptr);
-                    let hi32 = ptr::read_unaligned(in_ptr.add(8).cast::<u32>());
-                    let hi = vreinterpret_u8_u32(vset_lane_u32::<0>(hi32, vdup_n_u32(0)));
-                    vcombine_u8(lo, hi)
-                };
+                let v = load_12_neon(in_ptr, rem_total_in);
                 let part_a = vshlq_u8(vqtbl1q_u8(v, shuf_a), shl_a);
                 let part_b = vshlq_u8(vqtbl1q_u8(v, shuf_b), shr_b);
                 let idx = vandq_u8(vorrq_u8(part_a, part_b), mask_3f);
@@ -210,8 +239,10 @@ unsafe fn encode_neon<const URL_SAFE_ALPHABET: bool>(
 
 /// # Safety
 ///
-/// Caller must ensure `in_ptr` is valid for `limit_16 * 16` reads and `out_ptr` is valid for
-/// `limit_16 * 12` non-overlapping writes, with NEON enabled.
+/// Caller must ensure `in_ptr` is valid for `limit_16 * 16` reads, `out_ptr` is valid for
+/// `limit_16 * 12` writes, and NEON is enabled. `out_ptr` must either not overlap `in_ptr` or equal
+/// `in_ptr` (each iteration loads 64 or 16 input bytes before writing 48 or 12 output bytes, so
+/// `out_ptr` never overtakes unread input).
 #[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_neon<const URL_SAFE_ALPHABET: bool>(
@@ -234,7 +265,8 @@ unsafe fn decode_neon<const URL_SAFE_ALPHABET: bool>(
     let mut done_16 = 0;
 
     // SAFETY: Caller guarantees `limit_16 * 16` reads at `in_ptr`, `limit_16 * 12` writes at
-    // `out_ptr`, and lookup tables are 16-byte static arrays.
+    // `out_ptr`, non-overtaking pointer advancement for in-place decoding, and 16-byte static
+    // lookup tables.
     unsafe {
         let hi_mask_tbl = vld1q_u8(HI_MASK.as_ptr());
         let lo_mask_tbl = vld1q_u8(lo_mask_ptr);
@@ -287,105 +319,7 @@ unsafe fn decode_neon<const URL_SAFE_ALPHABET: bool>(
                 ) else {
                     return (done_16, true);
                 };
-                vst1_u8(out_ptr, vget_low_u8(packed));
-                ptr::write_unaligned(
-                    out_ptr.add(8).cast::<u32>(),
-                    vgetq_lane_u32::<2>(vreinterpretq_u32_u8(packed)),
-                );
-                in_ptr = in_ptr.add(16);
-                out_ptr = out_ptr.add(12);
-                done_16 += 1;
-            }
-        }
-    }
-    (done_16, false)
-}
-
-/// # Safety
-///
-/// Caller must ensure `ptr` is valid for `limit_16 * 16` reads and `limit_16 * 12` writes, with
-/// NEON enabled.
-#[inline]
-#[target_feature(enable = "neon")]
-unsafe fn decode_in_place_neon<const URL_SAFE_ALPHABET: bool>(
-    ptr: *mut u8,
-    limit_16: usize,
-) -> (usize, bool) {
-    let lo_mask_ptr = if URL_SAFE_ALPHABET {
-        &LO_MASK_URL
-    } else {
-        &LO_MASK_STD
-    }
-    .as_ptr();
-    let roll_ptr = if URL_SAFE_ALPHABET {
-        &ROLL_URL
-    } else {
-        &ROLL_STD
-    }
-    .as_ptr();
-    let mut in_ptr: *const u8 = ptr;
-    let mut out_ptr: *mut u8 = ptr;
-    let mut done_16 = 0;
-
-    // SAFETY: Caller guarantees `limit_16 * 16` readable/writable bytes from `ptr`. Each iteration
-    // loads its full 64-byte or 16-byte input before writing 48 or 12 bytes to `out_ptr`.
-    unsafe {
-        let hi_mask_tbl = vld1q_u8(HI_MASK.as_ptr());
-        let lo_mask_tbl = vld1q_u8(lo_mask_ptr);
-        let roll_tbl = vld1q_u8(roll_ptr);
-        let mask_0f = vdupq_n_u8(0x0f);
-        let special_ch = vdupq_n_u8(if URL_SAFE_ALPHABET { b'_' } else { b'/' });
-        let special_adj = vdupq_n_u8(if URL_SAFE_ALPHABET { 33 } else { 3 });
-
-        let limit_64_as_16 = (limit_16 / 4) * 4;
-        while done_16 < limit_64_as_16 {
-            let uint8x16x4_t(c0, c1, c2, c3) = vld4q_u8(in_ptr);
-            let Some(packed) = decode_chunk_64_neon::<URL_SAFE_ALPHABET>(
-                c0,
-                c1,
-                c2,
-                c3,
-                hi_mask_tbl,
-                lo_mask_tbl,
-                roll_tbl,
-                mask_0f,
-                special_ch,
-                special_adj,
-            ) else {
-                break;
-            };
-            vst3q_u8(out_ptr, packed);
-            in_ptr = in_ptr.add(64);
-            out_ptr = out_ptr.add(48);
-            done_16 += 4;
-        }
-
-        if done_16 < limit_16 {
-            let dec_shl = vld1q_s8(DEC_SHL.as_ptr());
-            let dec_shr = vld1q_s8(DEC_SHR.as_ptr());
-            let dec_pack = vld1q_u8(DEC_PACK.as_ptr());
-
-            while done_16 < limit_16 {
-                let c = vld1q_u8(in_ptr);
-                let Some(packed) = decode_chunk_16_neon::<URL_SAFE_ALPHABET>(
-                    c,
-                    hi_mask_tbl,
-                    lo_mask_tbl,
-                    roll_tbl,
-                    mask_0f,
-                    special_ch,
-                    special_adj,
-                    dec_shl,
-                    dec_shr,
-                    dec_pack,
-                ) else {
-                    return (done_16, true);
-                };
-                vst1_u8(out_ptr, vget_low_u8(packed));
-                ptr::write_unaligned(
-                    out_ptr.add(8).cast::<u32>(),
-                    vgetq_lane_u32::<2>(vreinterpretq_u32_u8(packed)),
-                );
+                store_12_neon(out_ptr, packed);
                 in_ptr = in_ptr.add(16);
                 out_ptr = out_ptr.add(12);
                 done_16 += 1;

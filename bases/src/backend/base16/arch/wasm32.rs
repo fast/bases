@@ -88,6 +88,7 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize,
     (chunks * 16, chunks * 32)
 }
 
+#[inline]
 pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
@@ -97,30 +98,14 @@ pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
         return (0, 0);
     }
 
-    let hi_mask = select_hi_mask::<UPPERCASE, STRICT_CASE>();
-    let mask_0f = u8x16_splat(0x0f);
-    let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr();
-    let mut done = 0;
-
-    while done < chunks {
-        // SAFETY: `chunks * 32 <= input.len()`, so `in_ptr` is valid for two 16-byte loads.
-        let (in0, in1) = unsafe { (v128_load(in_ptr.cast()), v128_load(in_ptr.add(16).cast())) };
-        let Some(packed) = decode_chunk_32(in0, in1, hi_mask, mask_0f) else {
-            break;
-        };
-        // SAFETY: `chunks * 16 <= output.len()`, so `out_ptr` is valid for a 16-byte store.
-        unsafe {
-            v128_store(out_ptr.cast(), packed);
-            in_ptr = in_ptr.add(32);
-            out_ptr = out_ptr.add(16);
-        }
-        done += 1;
-    }
-
+    // SAFETY: `chunks * 32 <= input.len()` and `chunks * 16 <= output.len()`.
+    let done = unsafe {
+        decode_wasm32::<UPPERCASE, STRICT_CASE>(input.as_ptr(), output.as_mut_ptr(), chunks)
+    };
     (done * 32, done * 16)
 }
 
+#[inline]
 pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> (usize, usize) {
@@ -129,21 +114,37 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
         return (0, 0);
     }
 
+    let ptr = buf.as_mut_ptr();
+    // SAFETY: `chunks * 32 <= buf.len()`, each iteration loads 32 input bytes before writing 16
+    // output bytes, and `out_ptr` advances strictly slower than `in_ptr`.
+    let done = unsafe { decode_wasm32::<UPPERCASE, STRICT_CASE>(ptr.cast_const(), ptr, chunks) };
+    (done * 32, done * 16)
+}
+
+/// # Safety
+///
+/// Caller must ensure `in_ptr` is valid for `chunks * 32` reads and `out_ptr` is valid for
+/// `chunks * 16` writes. `out_ptr` must either not overlap `in_ptr` or equal `in_ptr` (each
+/// iteration loads 32 input bytes before writing 16 output bytes, so `out_ptr` never overtakes
+/// unread input).
+#[inline]
+unsafe fn decode_wasm32<const UPPERCASE: bool, const STRICT_CASE: bool>(
+    mut in_ptr: *const u8,
+    mut out_ptr: *mut u8,
+    chunks: usize,
+) -> usize {
     let hi_mask = select_hi_mask::<UPPERCASE, STRICT_CASE>();
     let mask_0f = u8x16_splat(0x0f);
-    let ptr = buf.as_mut_ptr();
-    let mut in_ptr: *const u8 = ptr;
-    let mut out_ptr: *mut u8 = ptr;
     let mut done = 0;
 
     while done < chunks {
-        // SAFETY: `chunks * 32 <= buf.len()`. `in_ptr` reads 32 bytes before `out_ptr` writes
-        // 16 bytes, and `out_ptr` lags behind `in_ptr` by at least `16 * done` bytes.
+        // SAFETY: Caller guarantees `chunks * 32` reads at `in_ptr` and `chunks * 16` writes at
+        // `out_ptr` without overwriting unread input.
         let (in0, in1) = unsafe { (v128_load(in_ptr.cast()), v128_load(in_ptr.add(16).cast())) };
         let Some(packed) = decode_chunk_32(in0, in1, hi_mask, mask_0f) else {
             break;
         };
-        // SAFETY: `out_ptr` is within `buf` for 16 bytes and does not overwrite future `in_ptr`
+        // SAFETY: `out_ptr` is valid for a 16-byte store and does not overwrite future `in_ptr`
         // reads.
         unsafe {
             v128_store(out_ptr.cast(), packed);
@@ -153,7 +154,7 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
         done += 1;
     }
 
-    (done * 32, done * 16)
+    done
 }
 
 #[inline]

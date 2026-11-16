@@ -98,10 +98,11 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
         return (0, 0);
     }
 
+    let ptr = buf.as_mut_ptr();
     // SAFETY: `chunks_16 * 16 <= buf.len()`, each iteration loads 32 or 16 bytes before storing
     // 16 or 8 bytes, and NEON is baseline on aarch64.
     let done_16 =
-        unsafe { decode_in_place_neon::<UPPERCASE, STRICT_CASE>(buf.as_mut_ptr(), chunks_16) };
+        unsafe { decode_neon::<UPPERCASE, STRICT_CASE>(ptr.cast_const(), ptr, chunks_16) };
     (done_16 * 16, done_16 * 8)
 }
 
@@ -172,8 +173,10 @@ unsafe fn encode_neon<const UPPERCASE: bool>(
 
 /// # Safety
 ///
-/// Caller must ensure `in_ptr` is valid for `chunks_16 * 16` reads and `out_ptr` is valid for
-/// `chunks_16 * 8` non-overlapping writes, with NEON enabled.
+/// Caller must ensure `in_ptr` is valid for `chunks_16 * 16` reads, `out_ptr` is valid for
+/// `chunks_16 * 8` writes, and NEON is enabled. `out_ptr` must either not overlap `in_ptr` or
+/// equal `in_ptr` (each iteration loads 32 or 16 input bytes before writing 16 or 8 output bytes,
+/// so `out_ptr` never overtakes unread input).
 #[inline]
 #[target_feature(enable = "neon")]
 unsafe fn decode_neon<const UPPERCASE: bool, const STRICT_CASE: bool>(
@@ -184,62 +187,8 @@ unsafe fn decode_neon<const UPPERCASE: bool, const STRICT_CASE: bool>(
     let hi_mask_ptr = select_hi_mask::<UPPERCASE, STRICT_CASE>().as_ptr();
     let mut done_16 = 0;
     // SAFETY: Caller guarantees `chunks_16 * 16` readable bytes at `in_ptr`, `chunks_16 * 8`
-    // writable bytes at `out_ptr`, and table pointers point to 16-byte static arrays.
-    unsafe {
-        let hi_mask_tbl = vld1q_u8(hi_mask_ptr);
-        let lo_mask_tbl = vld1q_u8(LO_MASK.as_ptr());
-        let hi_off_tbl = vld1q_u8(HI_OFFSET.as_ptr());
-        let mask_0f = vdupq_n_u8(0x0f);
-        let mut saw_invalid = false;
-
-        while done_16 + 2 <= chunks_16 {
-            let uint8x16x2_t(even, odd) = vld2q_u8(in_ptr);
-            let Some(packed) =
-                decode_pair_neon(even, odd, hi_mask_tbl, lo_mask_tbl, hi_off_tbl, mask_0f)
-            else {
-                saw_invalid = true;
-                break;
-            };
-            vst1q_u8(out_ptr, packed);
-            in_ptr = in_ptr.add(32);
-            out_ptr = out_ptr.add(16);
-            done_16 += 2;
-        }
-
-        if !saw_invalid
-            && done_16 < chunks_16
-            && let Some(packed) = decode_16_neon(
-                vld1q_u8(in_ptr),
-                hi_mask_tbl,
-                lo_mask_tbl,
-                hi_off_tbl,
-                mask_0f,
-            )
-        {
-            vst1_u8(out_ptr, packed);
-            done_16 += 1;
-        }
-    }
-    done_16
-}
-
-/// # Safety
-///
-/// Caller must ensure `ptr` is valid for `chunks_16 * 16` reads and writes, with NEON enabled.
-#[inline]
-#[target_feature(enable = "neon")]
-unsafe fn decode_in_place_neon<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    ptr: *mut u8,
-    chunks_16: usize,
-) -> usize {
-    let hi_mask_ptr = select_hi_mask::<UPPERCASE, STRICT_CASE>().as_ptr();
-    let mut in_ptr: *const u8 = ptr;
-    let mut out_ptr: *mut u8 = ptr;
-    let mut done_16 = 0;
-    // SAFETY: Caller guarantees `chunks_16 * 16` readable/writable bytes from `ptr`. Each iteration
-    // loads `in_ptr[0..32]` or `in_ptr[0..16]` completely before writing `out_ptr[0..16]` or
-    // `out_ptr[0..8]`, and `out_ptr` lags behind `in_ptr` by at least `8 * done_16` bytes so future
-    // reads are never overwritten.
+    // writable bytes at `out_ptr`, non-overtaking pointer advancement for in-place decoding, and
+    // 16-byte static table pointers.
     unsafe {
         let hi_mask_tbl = vld1q_u8(hi_mask_ptr);
         let lo_mask_tbl = vld1q_u8(LO_MASK.as_ptr());

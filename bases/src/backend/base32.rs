@@ -15,14 +15,8 @@
 //! Base32 execution backend.
 
 use crate::DecodeError;
+use crate::backend;
 
-#[cfg(any(
-    all(target_arch = "aarch64", target_feature = "neon"),
-    all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-    ),
-))]
 #[allow(unsafe_code)]
 mod arch;
 
@@ -165,7 +159,7 @@ fn decoded_len_and_padding<const PADDED: bool>(
         }
 
         let padding = if input[input.len() - 1] == b'=' {
-            trailing_padding(input)
+            backend::trailing_padding(input)
         } else {
             0
         };
@@ -208,24 +202,31 @@ pub fn encode<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: boo
     let required = encoded_len::<PADDED>(input.len()).expect("encoded length overflow");
     assert!(output.len() >= required, "output buffer too small");
 
-    #[cfg(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-    ))]
     let (input_index, output_index) = arch::encode::<EXTENDED_HEX, UPPERCASE>(input, output);
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-    )))]
-    let (input_index, output_index) = (0, 0);
-
     encode_scalar_from::<EXTENDED_HEX, PADDED, UPPERCASE>(input, output, input_index, output_index)
+}
+
+#[inline]
+fn decode_complete_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
+    if PADDED {
+        if input.len() % 8 != 0 {
+            return Err(DecodeError::InvalidLength {
+                length: input.len(),
+            });
+        }
+        if input[input.len() - 1] == b'=' {
+            Ok(input.len() - 8)
+        } else {
+            Ok(input.len())
+        }
+    } else {
+        match input.len() % 8 {
+            0 | 2 | 4 | 5 | 7 => Ok((input.len() / 8) * 8),
+            _ => Err(DecodeError::InvalidLength {
+                length: input.len(),
+            }),
+        }
+    }
 }
 
 /// Decodes Base32 `input` into `output`, returning the number of bytes written.
@@ -243,51 +244,36 @@ pub fn decode<
         return Ok(0);
     }
 
-    let complete_len = if PADDED {
-        if input.len() % 8 != 0 {
-            return Err(DecodeError::InvalidLength {
-                length: input.len(),
-            });
-        }
-        if input[input.len() - 1] == b'=' {
-            input.len() - 8
-        } else {
-            input.len()
-        }
-    } else {
-        match input.len() % 8 {
-            0 | 2 | 4 | 5 | 7 => (input.len() / 8) * 8,
-            _ => {
-                return Err(DecodeError::InvalidLength {
-                    length: input.len(),
-                });
-            }
-        }
-    };
-
+    let complete_len = decode_complete_len::<PADDED>(input)?;
     assert!(
         output.len() >= (complete_len / 8) * 5,
         "output buffer too small"
     );
 
-    #[cfg(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-    ))]
     let (input_index, output_index) =
         arch::decode::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(&input[..complete_len], output);
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-    )))]
-    let (input_index, output_index) = (0, 0);
+    decode_from::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(
+        input,
+        output,
+        complete_len,
+        input_index,
+        output_index,
+    )
+}
 
+#[inline]
+fn decode_from<
+    const EXTENDED_HEX: bool,
+    const PADDED: bool,
+    const UPPERCASE: bool,
+    const STRICT_CASE: bool,
+>(
+    input: &[u8],
+    output: &mut [u8],
+    complete_len: usize,
+    input_index: usize,
+    output_index: usize,
+) -> Result<usize, DecodeError> {
     let mut output_index = decode_scalar_complete_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
         &input[..complete_len],
         output,
@@ -338,24 +324,32 @@ pub fn decode_in_place<
     let data_len = buf.len() - padding;
     let complete_len = (data_len / 8) * 8;
 
-    #[cfg(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-    ))]
     let (input_index, output_index) =
         arch::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, complete_len);
-    #[cfg(not(any(
-        all(target_arch = "aarch64", target_feature = "neon"),
-        all(
-            any(target_arch = "x86", target_arch = "x86_64"),
-            any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
-        ),
-    )))]
-    let (input_index, output_index) = (0, 0);
+    let written = decode_in_place_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+        buf,
+        data_len,
+        complete_len,
+        input_index,
+        output_index,
+    )?;
 
+    debug_assert_eq!(written, required);
+    Ok(written)
+}
+
+#[inline]
+fn decode_in_place_from<
+    const EXTENDED_HEX: bool,
+    const UPPERCASE: bool,
+    const STRICT_CASE: bool,
+>(
+    buf: &mut [u8],
+    data_len: usize,
+    complete_len: usize,
+    input_index: usize,
+    output_index: usize,
+) -> Result<usize, DecodeError> {
     let mut output_index = decode_in_place_scalar_complete_from::<
         EXTENDED_HEX,
         UPPERCASE,
@@ -373,7 +367,6 @@ pub fn decode_in_place<
         )?;
     }
 
-    debug_assert_eq!(output_index, required);
     Ok(output_index)
 }
 
@@ -449,6 +442,31 @@ fn encode_scalar_from<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERC
     output_index
 }
 
+#[inline]
+fn decode_chunk_8(lut: &[u8; 256], s: &[u8; 8]) -> Option<[u8; 5]> {
+    let v0 = lut[usize::from(s[0])];
+    let v1 = lut[usize::from(s[1])];
+    let v2 = lut[usize::from(s[2])];
+    let v3 = lut[usize::from(s[3])];
+    let v4 = lut[usize::from(s[4])];
+    let v5 = lut[usize::from(s[5])];
+    let v6 = lut[usize::from(s[6])];
+    let v7 = lut[usize::from(s[7])];
+    if (v0 | v1 | v2 | v3 | v4 | v5 | v6 | v7) & 0xe0 != 0 {
+        return None;
+    }
+    let packed = (u64::from(v0) << 35)
+        | (u64::from(v1) << 30)
+        | (u64::from(v2) << 25)
+        | (u64::from(v3) << 20)
+        | (u64::from(v4) << 15)
+        | (u64::from(v5) << 10)
+        | (u64::from(v6) << 5)
+        | u64::from(v7);
+    let [b0, b1, b2, b3] = ((packed >> 8) as u32).to_be_bytes();
+    Some([b0, b1, b2, b3, packed as u8])
+}
+
 fn decode_scalar_complete_from<
     const EXTENDED_HEX: bool,
     const UPPERCASE: bool,
@@ -462,29 +480,13 @@ fn decode_scalar_complete_from<
     let lut = select_decode_lut::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>();
 
     while input_index + 8 <= input.len() {
-        let s = &input[input_index..input_index + 8];
-        let v0 = lut[usize::from(s[0])];
-        let v1 = lut[usize::from(s[1])];
-        let v2 = lut[usize::from(s[2])];
-        let v3 = lut[usize::from(s[3])];
-        let v4 = lut[usize::from(s[4])];
-        let v5 = lut[usize::from(s[5])];
-        let v6 = lut[usize::from(s[6])];
-        let v7 = lut[usize::from(s[7])];
-        if (v0 | v1 | v2 | v3 | v4 | v5 | v6 | v7) & 0xe0 != 0 {
+        let s: &[u8; 8] = input[input_index..input_index + 8]
+            .try_into()
+            .expect("8-byte slice fits in [u8; 8]");
+        let Some(decoded) = decode_chunk_8(lut, s) else {
             return Err(find_invalid_in_quantum(s, input_index, lut));
-        }
-        let packed = (u64::from(v0) << 35)
-            | (u64::from(v1) << 30)
-            | (u64::from(v2) << 25)
-            | (u64::from(v3) << 20)
-            | (u64::from(v4) << 15)
-            | (u64::from(v5) << 10)
-            | (u64::from(v6) << 5)
-            | u64::from(v7);
-        output[output_index..output_index + 4]
-            .copy_from_slice(&((packed >> 8) as u32).to_be_bytes());
-        output[output_index + 4] = packed as u8;
+        };
+        output[output_index..output_index + 5].copy_from_slice(&decoded);
         input_index += 8;
         output_index += 5;
     }
@@ -508,27 +510,10 @@ fn decode_in_place_scalar_complete_from<
         let s: [u8; 8] = buf[input_index..input_index + 8]
             .try_into()
             .expect("8-byte slice fits in [u8; 8]");
-        let v0 = lut[usize::from(s[0])];
-        let v1 = lut[usize::from(s[1])];
-        let v2 = lut[usize::from(s[2])];
-        let v3 = lut[usize::from(s[3])];
-        let v4 = lut[usize::from(s[4])];
-        let v5 = lut[usize::from(s[5])];
-        let v6 = lut[usize::from(s[6])];
-        let v7 = lut[usize::from(s[7])];
-        if (v0 | v1 | v2 | v3 | v4 | v5 | v6 | v7) & 0xe0 != 0 {
+        let Some(decoded) = decode_chunk_8(lut, &s) else {
             return Err(find_invalid_in_quantum(&s, input_index, lut));
-        }
-        let packed = (u64::from(v0) << 35)
-            | (u64::from(v1) << 30)
-            | (u64::from(v2) << 25)
-            | (u64::from(v3) << 20)
-            | (u64::from(v4) << 15)
-            | (u64::from(v5) << 10)
-            | (u64::from(v6) << 5)
-            | u64::from(v7);
-        buf[output_index..output_index + 4].copy_from_slice(&((packed >> 8) as u32).to_be_bytes());
-        buf[output_index + 4] = packed as u8;
+        };
+        buf[output_index..output_index + 5].copy_from_slice(&decoded);
         input_index += 8;
         output_index += 5;
     }
@@ -610,7 +595,7 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
 fn find_invalid_in_quantum(quantum: &[u8], base_index: usize, lut: &[u8; 256]) -> DecodeError {
     for (offset, &byte) in quantum.iter().enumerate() {
         if lut[usize::from(byte)] & 0xe0 != 0 {
-            return invalid_byte_error(byte, base_index + offset);
+            return backend::invalid_byte_error(byte, base_index + offset);
         }
     }
     unreachable!("called only when at least one byte in quantum is invalid")
@@ -622,21 +607,8 @@ fn decode_value(byte: u8, index: usize, lut: &[u8; 256]) -> Result<u8, DecodeErr
     if value & 0xe0 == 0 {
         Ok(value)
     } else {
-        Err(invalid_byte_error(byte, index))
+        Err(backend::invalid_byte_error(byte, index))
     }
-}
-
-#[inline]
-fn invalid_byte_error(byte: u8, index: usize) -> DecodeError {
-    if byte == b'=' {
-        DecodeError::InvalidPadding { index }
-    } else {
-        DecodeError::InvalidByte { index, byte }
-    }
-}
-
-fn trailing_padding(input: &[u8]) -> usize {
-    input.iter().rev().take_while(|byte| **byte == b'=').count()
 }
 
 #[cfg(test)]
@@ -662,63 +634,14 @@ mod tests {
         if input.is_empty() {
             return Ok(0);
         }
-
-        let complete_len = if PADDED {
-            if input.len() % 8 != 0 {
-                return Err(DecodeError::InvalidLength {
-                    length: input.len(),
-                });
-            }
-            if input[input.len() - 1] == b'=' {
-                input.len() - 8
-            } else {
-                input.len()
-            }
-        } else {
-            match input.len() % 8 {
-                0 | 2 | 4 | 5 | 7 => (input.len() / 8) * 8,
-                _ => {
-                    return Err(DecodeError::InvalidLength {
-                        length: input.len(),
-                    });
-                }
-            }
-        };
-
-        let mut output_index = decode_scalar_complete_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
-            &input[..complete_len],
+        let complete_len = decode_complete_len::<PADDED>(input)?;
+        decode_from::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(
+            input,
             output,
+            complete_len,
             0,
             0,
-        )?;
-
-        if PADDED {
-            if complete_len != input.len() {
-                let last = &input[complete_len..];
-                let mut padding = 1;
-                while padding < 8 && last[7 - padding] == b'=' {
-                    padding += 1;
-                }
-                if !matches!(padding, 1 | 3 | 4 | 6) {
-                    return Err(DecodeError::InvalidPadding {
-                        index: input.len() - padding,
-                    });
-                }
-                output_index += decode_tail::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
-                    &last[..8 - padding],
-                    complete_len,
-                    &mut output[output_index..],
-                )?;
-            }
-        } else if complete_len != input.len() {
-            output_index += decode_tail::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
-                &input[complete_len..],
-                complete_len,
-                &mut output[output_index..],
-            )?;
-        }
-
-        Ok(output_index)
+        )
     }
 
     fn decode_in_place_scalar<
@@ -732,26 +655,15 @@ mod tests {
         let (required, padding) = decoded_len_and_padding::<PADDED>(buf)?;
         let data_len = buf.len() - padding;
         let complete_len = (data_len / 8) * 8;
-
-        let mut output_index = decode_in_place_scalar_complete_from::<
-            EXTENDED_HEX,
-            UPPERCASE,
-            STRICT_CASE,
-        >(buf, complete_len, 0, 0)?;
-
-        if complete_len != data_len {
-            let mut tail = [0_u8; 7];
-            let tail_len = data_len - complete_len;
-            tail[..tail_len].copy_from_slice(&buf[complete_len..data_len]);
-            output_index += decode_tail::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
-                &tail[..tail_len],
-                complete_len,
-                &mut buf[output_index..],
-            )?;
-        }
-
-        debug_assert_eq!(output_index, required);
-        Ok(output_index)
+        let written = decode_in_place_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+            buf,
+            data_len,
+            complete_len,
+            0,
+            0,
+        )?;
+        debug_assert_eq!(written, required);
+        Ok(written)
     }
 
     fn fill_pattern(buf: &mut [u8], seed: usize) {

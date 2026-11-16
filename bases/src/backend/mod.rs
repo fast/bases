@@ -21,3 +21,19 @@
 pub mod base16;
 pub mod base32;
 pub mod base64;
+
+use crate::DecodeError;
+
+#[inline]
+pub(crate) fn invalid_byte_error(byte: u8, index: usize) -> DecodeError {
+    if byte == b'=' {
+        DecodeError::InvalidPadding { index }
+    } else {
+        DecodeError::InvalidByte { index, byte }
+    }
+}
+
+#[inline]
+pub(crate) fn trailing_padding(input: &[u8]) -> usize {
+    input.iter().rev().take_while(|byte| **byte == b'=').count()
+}

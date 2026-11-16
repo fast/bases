@@ -94,109 +94,138 @@ const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> [i8
     }
 }
 
-#[cfg(target_feature = "avx2")]
+#[inline]
 pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
-    // SAFETY: `target_feature = "avx2"` is enabled at compile time.
-    unsafe { encode_avx2::<UPPERCASE>(input, output) }
-}
-
-#[cfg(all(not(target_feature = "avx2"), feature = "std"))]
-pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
-    if is_x86_feature_detected!("avx2") {
-        // SAFETY: Runtime feature detection confirmed AVX2 support.
+    #[cfg(target_feature = "avx2")]
+    {
+        // SAFETY: `target_feature = "avx2"` is enabled at compile time.
         unsafe { encode_avx2::<UPPERCASE>(input, output) }
-    } else if is_x86_feature_detected!("ssse3") {
-        // SAFETY: Runtime feature detection confirmed SSSE3 support.
+    }
+
+    #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: Runtime feature detection confirmed AVX2 support.
+            unsafe { encode_avx2::<UPPERCASE>(input, output) }
+        } else if is_x86_feature_detected!("ssse3") {
+            // SAFETY: Runtime feature detection confirmed SSSE3 support.
+            unsafe { encode_ssse3::<UPPERCASE>(input, output) }
+        } else {
+            let _ = (input, output);
+            (0, 0)
+        }
+    }
+
+    #[cfg(all(
+        not(target_feature = "avx2"),
+        not(feature = "std"),
+        target_feature = "ssse3"
+    ))]
+    {
+        // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
         unsafe { encode_ssse3::<UPPERCASE>(input, output) }
-    } else {
-        let _ = (input, output);
-        (0, 0)
     }
 }
 
-#[cfg(all(
-    not(target_feature = "avx2"),
-    not(feature = "std"),
-    target_feature = "ssse3"
-))]
-pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
-    // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
-    unsafe { encode_ssse3::<UPPERCASE>(input, output) }
-}
-
-#[cfg(target_feature = "avx2")]
+#[inline]
 pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
 ) -> (usize, usize) {
-    // SAFETY: `target_feature = "avx2"` is enabled at compile time.
-    unsafe { decode_avx2::<UPPERCASE, STRICT_CASE>(input, output) }
-}
-
-#[cfg(all(not(target_feature = "avx2"), feature = "std"))]
-pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    input: &[u8],
-    output: &mut [u8],
-) -> (usize, usize) {
-    if is_x86_feature_detected!("avx2") {
-        // SAFETY: Runtime feature detection confirmed AVX2 support.
-        unsafe { decode_avx2::<UPPERCASE, STRICT_CASE>(input, output) }
-    } else if is_x86_feature_detected!("ssse3") {
-        // SAFETY: Runtime feature detection confirmed SSSE3 support.
-        unsafe { decode_ssse3::<UPPERCASE, STRICT_CASE>(input, output) }
-    } else {
-        let _ = (input, output);
-        (0, 0)
+    let chunks_32 = (input.len() / 32).min(output.len() / 16);
+    if chunks_32 == 0 {
+        return (0, 0);
     }
+
+    let in_ptr = input.as_ptr();
+    let out_ptr = output.as_mut_ptr();
+    let done_32 = {
+        #[cfg(target_feature = "avx2")]
+        {
+            // SAFETY: `target_feature = "avx2"` is enabled at compile time and `chunks_32` is
+            // bounded by `input` and `output`.
+            unsafe { decode_avx2::<UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_32) }
+        }
+
+        #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: Runtime feature detection confirmed AVX2 support and `chunks_32` is
+                // bounded by `input` and `output`.
+                unsafe { decode_avx2::<UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_32) }
+            } else if is_x86_feature_detected!("ssse3") {
+                // SAFETY: Runtime feature detection confirmed SSSE3 support and `chunks_32` is
+                // bounded by `input` and `output`.
+                unsafe { decode_ssse3::<UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_32) }
+            } else {
+                let _ = (in_ptr, out_ptr);
+                0
+            }
+        }
+
+        #[cfg(all(
+            not(target_feature = "avx2"),
+            not(feature = "std"),
+            target_feature = "ssse3"
+        ))]
+        {
+            // SAFETY: `target_feature = "ssse3"` is enabled at compile time and `chunks_32` is
+            // bounded by `input` and `output`.
+            unsafe { decode_ssse3::<UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_32) }
+        }
+    };
+
+    (done_32 * 32, done_32 * 16)
 }
 
-#[cfg(all(
-    not(target_feature = "avx2"),
-    not(feature = "std"),
-    target_feature = "ssse3"
-))]
-pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    input: &[u8],
-    output: &mut [u8],
-) -> (usize, usize) {
-    // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
-    unsafe { decode_ssse3::<UPPERCASE, STRICT_CASE>(input, output) }
-}
-
-#[cfg(target_feature = "avx2")]
+#[inline]
 pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> (usize, usize) {
-    // SAFETY: `target_feature = "avx2"` is enabled at compile time.
-    unsafe { decode_in_place_avx2::<UPPERCASE, STRICT_CASE>(buf) }
-}
-
-#[cfg(all(not(target_feature = "avx2"), feature = "std"))]
-pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    buf: &mut [u8],
-) -> (usize, usize) {
-    if is_x86_feature_detected!("avx2") {
-        // SAFETY: Runtime feature detection confirmed AVX2 support.
-        unsafe { decode_in_place_avx2::<UPPERCASE, STRICT_CASE>(buf) }
-    } else if is_x86_feature_detected!("ssse3") {
-        // SAFETY: Runtime feature detection confirmed SSSE3 support.
-        unsafe { decode_in_place_ssse3::<UPPERCASE, STRICT_CASE>(buf) }
-    } else {
-        let _ = buf;
-        (0, 0)
+    let chunks_32 = buf.len() / 32;
+    if chunks_32 == 0 {
+        return (0, 0);
     }
-}
 
-#[cfg(all(
-    not(target_feature = "avx2"),
-    not(feature = "std"),
-    target_feature = "ssse3"
-))]
-pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    buf: &mut [u8],
-) -> (usize, usize) {
-    // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
-    unsafe { decode_in_place_ssse3::<UPPERCASE, STRICT_CASE>(buf) }
+    let ptr = buf.as_mut_ptr();
+    let in_ptr = ptr.cast_const();
+    let done_32 = {
+        #[cfg(target_feature = "avx2")]
+        {
+            // SAFETY: `target_feature = "avx2"` is enabled at compile time, `chunks_32 * 32 <=
+            // buf.len()`, and each step loads its full input before writing half as many bytes.
+            unsafe { decode_avx2::<UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_32) }
+        }
+
+        #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+        {
+            if is_x86_feature_detected!("avx2") {
+                // SAFETY: Runtime feature detection confirmed AVX2 support, `chunks_32 * 32 <=
+                // buf.len()`, and each step loads its full input before writing half as many bytes.
+                unsafe { decode_avx2::<UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_32) }
+            } else if is_x86_feature_detected!("ssse3") {
+                // SAFETY: Runtime feature detection confirmed SSSE3 support, `chunks_32 * 32 <=
+                // buf.len()`, and each step loads its full input before writing half as many bytes.
+                unsafe { decode_ssse3::<UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_32) }
+            } else {
+                let _ = (in_ptr, ptr);
+                0
+            }
+        }
+
+        #[cfg(all(
+            not(target_feature = "avx2"),
+            not(feature = "std"),
+            target_feature = "ssse3"
+        ))]
+        {
+            // SAFETY: `target_feature = "ssse3"` is enabled at compile time, `chunks_32 * 32 <=
+            // buf.len()`, and each step loads its full input before writing half as many bytes.
+            unsafe { decode_ssse3::<UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_32) }
+        }
+    };
+
+    (done_32 * 32, done_32 * 16)
 }
 
 /// # Safety
@@ -381,27 +410,26 @@ unsafe fn decode_chunk_32(
 
 /// # Safety
 ///
-/// Requires SSSE3 support on the current CPU.
+/// Caller must ensure `in_ptr` is valid for `chunks * 32` reads, `out_ptr` is valid for
+/// `chunks * 16` writes, and SSSE3 is enabled. `out_ptr` must either not overlap `in_ptr` or equal
+/// `in_ptr` (each iteration loads 32 input bytes before writing 16 output bytes, so `out_ptr` never
+/// overtakes unread input).
 #[cfg(not(target_feature = "avx2"))]
+#[inline]
 #[target_feature(enable = "ssse3")]
 unsafe fn decode_ssse3<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    input: &[u8],
-    output: &mut [u8],
-) -> (usize, usize) {
-    let chunks = (input.len() / 32).min(output.len() / 16);
-    if chunks == 0 {
-        return (0, 0);
-    }
-
+    mut in_ptr: *const u8,
+    mut out_ptr: *mut u8,
+    chunks: usize,
+) -> usize {
     let mut done = 0;
-    // SAFETY: `chunks * 32 <= input.len()` and `chunks * 16 <= output.len()`, and SSSE3 is enabled.
+    // SAFETY: Caller guarantees `chunks * 32` reads at `in_ptr`, `chunks * 16` writes at `out_ptr`,
+    // and non-overtaking pointer advancement for in-place decoding.
     unsafe {
         let (hi_mask, lo_mask, hi_off) = decode_128_tables::<UPPERCASE, STRICT_CASE>();
         let mask_0f = _mm_set1_epi8(0x0f);
         let mul_0110 = _mm_set1_epi16(0x0110);
         let zero = _mm_setzero_si128();
-        let mut in_ptr = input.as_ptr();
-        let mut out_ptr = output.as_mut_ptr();
 
         while done < chunks {
             let Some(packed) =
@@ -415,47 +443,7 @@ unsafe fn decode_ssse3<const UPPERCASE: bool, const STRICT_CASE: bool>(
             done += 1;
         }
     }
-    (done * 32, done * 16)
-}
-
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
-#[cfg(not(target_feature = "avx2"))]
-#[target_feature(enable = "ssse3")]
-unsafe fn decode_in_place_ssse3<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    buf: &mut [u8],
-) -> (usize, usize) {
-    let chunks = buf.len() / 32;
-    if chunks == 0 {
-        return (0, 0);
-    }
-
-    let mut done = 0;
-    let ptr = buf.as_mut_ptr();
-    // SAFETY: `chunks * 32 <= buf.len()`. Each iteration finishes loading `in_ptr[0..32]` before
-    // storing `out_ptr[0..16]`, and `out_ptr` lags behind `in_ptr` by `16 * done` bytes.
-    unsafe {
-        let (hi_mask, lo_mask, hi_off) = decode_128_tables::<UPPERCASE, STRICT_CASE>();
-        let mask_0f = _mm_set1_epi8(0x0f);
-        let mul_0110 = _mm_set1_epi16(0x0110);
-        let zero = _mm_setzero_si128();
-        let mut in_ptr: *const u8 = ptr;
-        let mut out_ptr: *mut u8 = ptr;
-
-        while done < chunks {
-            let Some(packed) =
-                decode_chunk_32(in_ptr, hi_mask, lo_mask, hi_off, mask_0f, mul_0110, zero)
-            else {
-                break;
-            };
-            _mm_storeu_si128(out_ptr.cast(), packed);
-            in_ptr = in_ptr.add(32);
-            out_ptr = out_ptr.add(16);
-            done += 1;
-        }
-    }
-    (done * 32, done * 16)
+    done
 }
 
 /// # Safety
@@ -508,127 +496,58 @@ unsafe fn decode_chunk_64(
 
 /// # Safety
 ///
-/// Requires AVX2 support on the current CPU.
+/// Caller must ensure `in_ptr` is valid for `chunks_32 * 32` reads, `out_ptr` is valid for
+/// `chunks_32 * 16` writes, and AVX2 is enabled. `out_ptr` must either not overlap `in_ptr` or
+/// equal `in_ptr` (each iteration loads 64 or 32 input bytes before writing 32 or 16 output bytes,
+/// so `out_ptr` never overtakes unread input).
 #[cfg(any(feature = "std", target_feature = "avx2"))]
+#[inline]
 #[target_feature(enable = "avx2")]
 unsafe fn decode_avx2<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    input: &[u8],
-    output: &mut [u8],
-) -> (usize, usize) {
-    let chunks = (input.len() / 64).min(output.len() / 32);
-    let mut done = 0;
+    mut in_ptr: *const u8,
+    mut out_ptr: *mut u8,
+    chunks_32: usize,
+) -> usize {
+    let chunks_64 = chunks_32 / 2;
+    let mut done_32 = 0;
 
-    // SAFETY: `chunks * 64 <= input.len()` and `chunks * 32 <= output.len()`, and the trailing
-    // 32-byte step checks bounds before accessing `input` and `output`.
+    // SAFETY: Caller guarantees `chunks_32 * 32` reads at `in_ptr`, `chunks_32 * 16` writes at
+    // `out_ptr`, and non-overtaking pointer advancement for in-place decoding.
     unsafe {
         let (hi_128, lo_128, off_128) = decode_128_tables::<UPPERCASE, STRICT_CASE>();
-        if chunks > 0 {
+        if chunks_64 > 0 {
             let hi_mask = _mm256_set_m128i(hi_128, hi_128);
             let lo_mask = _mm256_set_m128i(lo_128, lo_128);
             let hi_off = _mm256_set_m128i(off_128, off_128);
             let mask_0f = _mm256_set1_epi8(0x0f);
             let mul_0110 = _mm256_set1_epi16(0x0110);
             let zero = _mm256_setzero_si256();
-            let mut in_ptr = input.as_ptr();
-            let mut out_ptr = output.as_mut_ptr();
 
-            while done < chunks {
+            for _ in 0..chunks_64 {
                 let Some(packed) =
                     decode_chunk_64(in_ptr, hi_mask, lo_mask, hi_off, mask_0f, mul_0110, zero)
                 else {
-                    return (done * 64, done * 32);
+                    return done_32;
                 };
                 _mm256_storeu_si256(out_ptr.cast(), packed);
                 in_ptr = in_ptr.add(64);
                 out_ptr = out_ptr.add(32);
-                done += 1;
+                done_32 += 2;
             }
         }
 
-        let mut input_index = done * 64;
-        let mut output_index = done * 32;
-        if input_index + 32 <= input.len() && output_index + 16 <= output.len() {
+        if done_32 < chunks_32 {
             let mask_0f = _mm_set1_epi8(0x0f);
             let mul_0110 = _mm_set1_epi16(0x0110);
             let zero = _mm_setzero_si128();
-            if let Some(packed) = decode_chunk_32(
-                input.as_ptr().add(input_index),
-                hi_128,
-                lo_128,
-                off_128,
-                mask_0f,
-                mul_0110,
-                zero,
-            ) {
-                _mm_storeu_si128(output.as_mut_ptr().add(output_index).cast(), packed);
-                input_index += 32;
-                output_index += 16;
+            if let Some(packed) =
+                decode_chunk_32(in_ptr, hi_128, lo_128, off_128, mask_0f, mul_0110, zero)
+            {
+                _mm_storeu_si128(out_ptr.cast(), packed);
+                done_32 += 1;
             }
         }
-        (input_index, output_index)
     }
-}
 
-/// # Safety
-///
-/// Requires AVX2 support on the current CPU.
-#[cfg(any(feature = "std", target_feature = "avx2"))]
-#[target_feature(enable = "avx2")]
-unsafe fn decode_in_place_avx2<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    buf: &mut [u8],
-) -> (usize, usize) {
-    let chunks = buf.len() / 64;
-    let mut done = 0;
-    let ptr = buf.as_mut_ptr();
-    let len = buf.len();
-
-    // SAFETY: `chunks * 64 <= len`, and the trailing 32-byte check keeps reads/writes in bounds.
-    // Every chunk finishes loading its input vector before writing to `out_ptr`.
-    unsafe {
-        let (hi_128, lo_128, off_128) = decode_128_tables::<UPPERCASE, STRICT_CASE>();
-        if chunks > 0 {
-            let hi_mask = _mm256_set_m128i(hi_128, hi_128);
-            let lo_mask = _mm256_set_m128i(lo_128, lo_128);
-            let hi_off = _mm256_set_m128i(off_128, off_128);
-            let mask_0f = _mm256_set1_epi8(0x0f);
-            let mul_0110 = _mm256_set1_epi16(0x0110);
-            let zero = _mm256_setzero_si256();
-            let mut in_ptr: *const u8 = ptr;
-            let mut out_ptr: *mut u8 = ptr;
-
-            while done < chunks {
-                let Some(packed) =
-                    decode_chunk_64(in_ptr, hi_mask, lo_mask, hi_off, mask_0f, mul_0110, zero)
-                else {
-                    return (done * 64, done * 32);
-                };
-                _mm256_storeu_si256(out_ptr.cast(), packed);
-                in_ptr = in_ptr.add(64);
-                out_ptr = out_ptr.add(32);
-                done += 1;
-            }
-        }
-
-        let mut input_index = done * 64;
-        let mut output_index = done * 32;
-        if input_index + 32 <= len {
-            let mask_0f = _mm_set1_epi8(0x0f);
-            let mul_0110 = _mm_set1_epi16(0x0110);
-            let zero = _mm_setzero_si128();
-            if let Some(packed) = decode_chunk_32(
-                ptr.add(input_index),
-                hi_128,
-                lo_128,
-                off_128,
-                mask_0f,
-                mul_0110,
-                zero,
-            ) {
-                _mm_storeu_si128(ptr.add(output_index).cast(), packed);
-                input_index += 32;
-                output_index += 16;
-            }
-        }
-        (input_index, output_index)
-    }
+    done_32
 }
