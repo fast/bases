@@ -16,7 +16,11 @@ use std::hint::black_box;
 
 use base32ct::Encoding as _;
 use base64::Engine as _;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use base64::engine::general_purpose::PAD;
 use base64::engine::general_purpose::STANDARD;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use base64::engine::simd::Simd;
 use base64_simd::AsOut;
 use base64ct::Encoding as _;
 use bases::Base16Lower;
@@ -63,7 +67,12 @@ pub fn register(runner: &mut Runner) {
         runner,
         "base16",
         &data_encoding::HEXLOWER_PERMISSIVE,
-        &[(1024, 5_100_000, 4_000_000)],
+        &[
+            (8, 30_000_000, 30_000_000),
+            (32, 20_000_000, 20_000_000),
+            (1024, 5_100_000, 4_000_000),
+            (16_384, 300_000, 250_000),
+        ],
         &[
             ("hex", &hex_peer),
             ("faster-hex", &faster_hex_peer),
@@ -80,7 +89,12 @@ pub fn register(runner: &mut Runner) {
         runner,
         "base32",
         &data_encoding::BASE32,
-        &[(1024, 4_300_000, 2_450_000)],
+        &[
+            (8, 20_000_000, 20_000_000),
+            (32, 15_000_000, 10_000_000),
+            (1024, 4_300_000, 2_450_000),
+            (16_384, 250_000, 150_000),
+        ],
         &[("base32ct", &base32)],
     );
 
@@ -91,6 +105,13 @@ pub fn register(runner: &mut Runner) {
     let constant_time = buffer(
         |input, output| base64ct::Base64::encode(input, output).unwrap().len(),
         |input, output| base64ct::Base64::decode(input, output).unwrap().len(),
+    );
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let simd_engine = Simd::standard(PAD);
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let base64_simd_engine = buffer(
+        |input, output| simd_engine.encode_slice(input, output).unwrap(),
+        |input, output| simd_engine.decode_slice(input, output).unwrap(),
     );
     let simd = buffer(
         |input, output| {
@@ -110,12 +131,16 @@ pub fn register(runner: &mut Runner) {
         "base64",
         &data_encoding::BASE64,
         &[
+            (8, 20_000_000, 25_000_000),
+            (32, 20_000_000, 25_000_000),
             (64, 26_000_000, 30_000_000),
             (1024, 4_750_000, 3_650_000),
             (16_384, 295_000, 225_000),
         ],
         &[
             ("base64", &standard),
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            ("base64::Simd", &base64_simd_engine),
             ("base64ct", &constant_time),
             ("base64-simd", &simd),
         ],

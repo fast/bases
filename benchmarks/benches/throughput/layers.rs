@@ -23,10 +23,17 @@ use std::str;
 use base32ct::Encoding as _;
 use base64::Engine as _;
 use base64::display::Base64Display;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use base64::engine::general_purpose::NO_PAD;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use base64::engine::general_purpose::PAD;
 use base64::engine::general_purpose::STANDARD;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+use base64::engine::simd::Simd;
 use base64::read::DecoderReader;
 use base64::write::EncoderWriter;
+use base64_simd::AsOut;
 use bases::Base16Lower;
 use bases::Base32;
 use bases::Base64;
@@ -43,6 +50,10 @@ use crate::harness::Runner;
 
 pub fn register(runner: &mut Runner) {
     let standard = data_encoding::BASE64;
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let simd = Simd::standard(PAD);
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let simd_url = Simd::url_safe(NO_PAD);
     let lowercase = data_encoding::HEXLOWER_PERMISSIVE;
     owned_cases::<Base16Lower>(
         runner,
@@ -89,26 +100,60 @@ pub fn register(runner: &mut Runner) {
         "base64",
         &standard,
         (1024, 3_300_000, 3_000_000),
-        &[(
-            "base64",
-            &owned(
-                |bytes| STANDARD.encode(bytes),
-                |text| STANDARD.decode(text).unwrap(),
+        &[
+            (
+                "base64",
+                &owned(
+                    |bytes| STANDARD.encode(bytes),
+                    |text| STANDARD.decode(text).unwrap(),
+                ),
             ),
-        )],
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            (
+                "base64::Simd",
+                &owned(
+                    |bytes| simd.encode(bytes),
+                    |text| simd.decode(text).unwrap(),
+                ),
+            ),
+            (
+                "base64-simd",
+                &owned(
+                    |bytes| base64_simd::STANDARD.encode_to_string(bytes),
+                    |text| base64_simd::STANDARD.decode_to_vec(text).unwrap(),
+                ),
+            ),
+        ],
     );
     owned_cases::<Base64UrlUnpadded>(
         runner,
         Base64UrlUnpadded::name(),
         &data_encoding::BASE64URL_NOPAD,
         (8, 17_500_000, 22_000_000),
-        &[(
-            "base64",
-            &owned(
-                |bytes| URL_SAFE_NO_PAD.encode(bytes),
-                |text| URL_SAFE_NO_PAD.decode(text).unwrap(),
+        &[
+            (
+                "base64",
+                &owned(
+                    |bytes| URL_SAFE_NO_PAD.encode(bytes),
+                    |text| URL_SAFE_NO_PAD.decode(text).unwrap(),
+                ),
             ),
-        )],
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            (
+                "base64::Simd",
+                &owned(
+                    |bytes| simd_url.encode(bytes),
+                    |text| simd_url.decode(text).unwrap(),
+                ),
+            ),
+            (
+                "base64-simd",
+                &owned(
+                    |bytes| base64_simd::URL_SAFE_NO_PAD.encode_to_string(bytes),
+                    |text| base64_simd::URL_SAFE_NO_PAD.decode_to_vec(text).unwrap(),
+                ),
+            ),
+        ],
     );
 
     runner.case(
@@ -151,12 +196,30 @@ pub fn register(runner: &mut Runner) {
                 "base64",
                 &formatted(|out, bytes| write!(out, "{}", Base64Display::new(bytes, &STANDARD))),
             ),
+            #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+            (
+                "base64::Simd",
+                &formatted(|out, bytes| write!(out, "{}", Base64Display::new(bytes, &simd))),
+            ),
         ],
     );
 
     let ours = buffer(stream_encode, stream_decode);
-    let peer = buffer(writer_encode, reader_decode);
-    let peers: &[Peer<'_>] = &[("bases", &ours), ("base64", &peer)];
+    let peer = buffer(
+        |input, output| writer_encode(input, output, &STANDARD),
+        |input, output| reader_decode(input, output, &STANDARD),
+    );
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    let simd_peer = buffer(
+        |input, output| writer_encode(input, output, &simd),
+        |input, output| reader_decode(input, output, &simd),
+    );
+    let peers: &[Peer<'_>] = &[
+        ("bases", &ours),
+        ("base64", &peer),
+        #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+        ("base64::Simd", &simd_peer),
+    ];
     runner.case(
         "base64/stream/encode/16384",
         180_000,
@@ -198,6 +261,21 @@ pub fn register(runner: &mut Runner) {
                     "base64",
                     &rejected(at_end, |input, output| {
                         STANDARD.decode_slice(input, output).is_err()
+                    }),
+                ),
+                #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+                (
+                    "base64::Simd",
+                    &rejected(at_end, |input, output| {
+                        simd.decode_slice(input, output).is_err()
+                    }),
+                ),
+                (
+                    "base64-simd",
+                    &rejected(at_end, |input, output| {
+                        base64_simd::STANDARD
+                            .decode(input, output.as_out())
+                            .is_err()
                     }),
                 ),
             ],
@@ -288,9 +366,9 @@ fn stream_encode(input: &[u8], output: &mut [u8]) -> usize {
     written + encoder.finish(&mut output[written..]).unwrap().len()
 }
 
-fn writer_encode(input: &[u8], output: &mut [u8]) -> usize {
+fn writer_encode(input: &[u8], output: &mut [u8], engine: &impl base64::Engine) -> usize {
     let capacity = output.len();
-    let mut writer = EncoderWriter::new(output, &STANDARD);
+    let mut writer = EncoderWriter::new(output, engine);
     for chunk in input.chunks(CHUNK) {
         writer.write_all(chunk).unwrap();
     }
@@ -315,8 +393,8 @@ impl Read for Chunked<'_> {
     }
 }
 
-fn reader_decode(input: &[u8], mut output: &mut [u8]) -> usize {
-    let mut reader = DecoderReader::new(Chunked(input), &STANDARD);
+fn reader_decode(input: &[u8], mut output: &mut [u8], engine: &impl base64::Engine) -> usize {
+    let mut reader = DecoderReader::new(Chunked(input), engine);
     io::copy(&mut reader, &mut output).unwrap() as usize
 }
 
