@@ -271,7 +271,6 @@ unsafe fn encode_128_consts<const URL_SAFE_ALPHABET: bool>() -> (
     __m128i,
     __m128i,
     __m128i,
-    __m128i,
 ) {
     let shuf = _mm_setr_epi8(1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10);
     let mask0 = _mm_set1_epi32(0x0FC0_FC00);
@@ -279,18 +278,17 @@ unsafe fn encode_128_consts<const URL_SAFE_ALPHABET: bool>() -> (
     let mask1 = _mm_set1_epi32(0x003F_03F0);
     let mul1 = _mm_set1_epi32(0x0100_0010);
     let c51 = _mm_set1_epi8(51);
-    let c26 = _mm_set1_epi8(26);
-    let c13 = _mm_set1_epi8(13);
+    let c25 = _mm_set1_epi8(25);
     let offset_lut = if URL_SAFE_ALPHABET {
         _mm_setr_epi8(
-            71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -17, 32, 65, 0, 0,
+            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -17, 32, 0, 0,
         )
     } else {
         _mm_setr_epi8(
-            71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 65, 0, 0,
+            65, 71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 0, 0,
         )
     };
-    (shuf, mask0, mul0, mask1, mul1, c51, c26, c13, offset_lut)
+    (shuf, mask0, mul0, mask1, mul1, c51, c25, offset_lut)
 }
 
 /// # Safety
@@ -309,8 +307,7 @@ unsafe fn encode_chunk_12(
     mask1: __m128i,
     mul1: __m128i,
     c51: __m128i,
-    c26: __m128i,
-    c13: __m128i,
+    c25: __m128i,
     offset_lut: __m128i,
 ) {
     // SAFETY: Caller guarantees `in_ptr` is valid for 16 readable bytes and `out_ptr` for 16
@@ -322,8 +319,8 @@ unsafe fn encode_chunk_12(
         let t1 = _mm_mullo_epi16(_mm_and_si128(w, mask1), mul1);
         let indices = _mm_or_si128(t0, t1);
         let result = _mm_subs_epu8(indices, c51);
-        let less = _mm_cmpgt_epi8(c26, indices);
-        let key = _mm_add_epi8(result, _mm_and_si128(less, c13));
+        // Map A-Z to slot 0, a-z to slot 1, and the remaining symbols to slots 2-13.
+        let key = _mm_sub_epi8(result, _mm_cmpgt_epi8(indices, c25));
         let ascii = _mm_add_epi8(indices, _mm_shuffle_epi8(offset_lut, key));
         _mm_storeu_si128(out_ptr.cast(), ascii);
     }
@@ -351,11 +348,11 @@ unsafe fn encode_ssse3<const URL_SAFE_ALPHABET: bool>(
     // SAFETY: `chunks > 0` implies `input.len() >= (chunks - 1) * 12 + 16` and `output.len() >=
     // chunks * 16`.
     unsafe {
-        let (shuf, mask0, mul0, mask1, mul1, c51, c26, c13, offset_lut) =
+        let (shuf, mask0, mul0, mask1, mul1, c51, c25, offset_lut) =
             encode_128_consts::<URL_SAFE_ALPHABET>();
         for _ in 0..chunks {
             encode_chunk_12(
-                in_ptr, out_ptr, shuf, mask0, mul0, mask1, mul1, c51, c26, c13, offset_lut,
+                in_ptr, out_ptr, shuf, mask0, mul0, mask1, mul1, c51, c25, offset_lut,
             );
             in_ptr = in_ptr.add(12);
             out_ptr = out_ptr.add(16);
@@ -385,7 +382,7 @@ unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
     // chunks * 32`. The trailing 16-byte check ensures `input_index + 16 <= input.len()` and
     // `output_index + 16 <= output.len()`.
     unsafe {
-        let (sh_128, m0_128, ml0_128, m1_128, ml1_128, c51_128, c26_128, c13_128, lut_128) =
+        let (sh_128, m0_128, ml0_128, m1_128, ml1_128, c51_128, c25_128, lut_128) =
             encode_128_consts::<URL_SAFE_ALPHABET>();
 
         if chunks > 0 {
@@ -395,8 +392,7 @@ unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
             let mask1 = _mm256_set_m128i(m1_128, m1_128);
             let mul1 = _mm256_set_m128i(ml1_128, ml1_128);
             let c51 = _mm256_set_m128i(c51_128, c51_128);
-            let c26 = _mm256_set_m128i(c26_128, c26_128);
-            let c13 = _mm256_set_m128i(c13_128, c13_128);
+            let c25 = _mm256_set_m128i(c25_128, c25_128);
             let offset_lut = _mm256_set_m128i(lut_128, lut_128);
 
             let mut in_ptr = input.as_ptr();
@@ -411,8 +407,7 @@ unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
                 let t1 = _mm256_mullo_epi16(_mm256_and_si256(w, mask1), mul1);
                 let indices = _mm256_or_si256(t0, t1);
                 let result = _mm256_subs_epu8(indices, c51);
-                let less = _mm256_cmpgt_epi8(c26, indices);
-                let key = _mm256_add_epi8(result, _mm256_and_si256(less, c13));
+                let key = _mm256_sub_epi8(result, _mm256_cmpgt_epi8(indices, c25));
                 let ascii = _mm256_add_epi8(indices, _mm256_shuffle_epi8(offset_lut, key));
                 _mm256_storeu_si256(out_ptr.cast(), ascii);
                 in_ptr = in_ptr.add(24);
@@ -430,8 +425,7 @@ unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
                 m1_128,
                 ml1_128,
                 c51_128,
-                c26_128,
-                c13_128,
+                c25_128,
                 lut_128,
             );
             input_index += 12;
