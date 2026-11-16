@@ -355,38 +355,23 @@ fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         STANDARD
     };
 
-    while input_index + 12 <= input.len() {
-        let s = &input[input_index..input_index + 12];
-        let w0 = u32::from_be_bytes([0, s[0], s[1], s[2]]);
-        let w1 = u32::from_be_bytes([0, s[3], s[4], s[5]]);
-        let w2 = u32::from_be_bytes([0, s[6], s[7], s[8]]);
-        let w3 = u32::from_be_bytes([0, s[9], s[10], s[11]]);
-        let e0 = encode_quantum_3(alphabet, w0);
-        let e1 = encode_quantum_3(alphabet, w1);
-        let e2 = encode_quantum_3(alphabet, w2);
-        let e3 = encode_quantum_3(alphabet, w3);
-        backend::write_bytes(&mut output[output_index..], e0);
-        backend::write_bytes(&mut output[output_index + 4..], e1);
-        backend::write_bytes(&mut output[output_index + 8..], e2);
-        backend::write_bytes(&mut output[output_index + 12..], e3);
-        input_index += 12;
-        output_index += 16;
-    }
-
-    while input_index + 6 <= input.len() {
-        let s = &input[input_index..input_index + 6];
-        let w = u64::from_be_bytes([0, 0, s[0], s[1], s[2], s[3], s[4], s[5]]);
+    // Read eight available bytes, but encode six so the load stays within the input.
+    while input_index + 8 <= input.len() {
+        let s = input[input_index..input_index + 8]
+            .try_into()
+            .expect("8-byte slice fits in [u8; 8]");
+        let w = u64::from_be_bytes(s);
         backend::write_bytes(
             &mut output[output_index..],
             [
-                alphabet[((w >> 42) & 0x3f) as usize],
-                alphabet[((w >> 36) & 0x3f) as usize],
-                alphabet[((w >> 30) & 0x3f) as usize],
-                alphabet[((w >> 24) & 0x3f) as usize],
-                alphabet[((w >> 18) & 0x3f) as usize],
-                alphabet[((w >> 12) & 0x3f) as usize],
-                alphabet[((w >> 6) & 0x3f) as usize],
-                alphabet[(w & 0x3f) as usize],
+                alphabet[((w >> 58) & 0x3f) as usize],
+                alphabet[((w >> 52) & 0x3f) as usize],
+                alphabet[((w >> 46) & 0x3f) as usize],
+                alphabet[((w >> 40) & 0x3f) as usize],
+                alphabet[((w >> 34) & 0x3f) as usize],
+                alphabet[((w >> 28) & 0x3f) as usize],
+                alphabet[((w >> 22) & 0x3f) as usize],
+                alphabet[((w >> 16) & 0x3f) as usize],
             ],
         );
         input_index += 6;
