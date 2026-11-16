@@ -16,6 +16,7 @@ use core::fmt;
 use core::hash::Hash;
 use core::hash::Hasher;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 
 use crate::Base16Lower;
 use crate::Base16Upper;
@@ -23,10 +24,7 @@ use crate::Codec;
 use crate::codec;
 use crate::codec::sealed::Profile;
 
-// Full chunks align with both 3-byte and 5-byte input quanta. Base16 determines
-// the worst-case output size at twice the input length.
-const INPUT_CHUNK_LEN: usize = 240;
-const OUTPUT_CHUNK_LEN: usize = INPUT_CHUNK_LEN * 2;
+const OUTPUT_CHUNK_LEN: usize = 1024;
 
 /// A borrowed binary value encoded lazily with profile `C`.
 ///
@@ -175,21 +173,24 @@ fn fmt_encoded<C: Codec>(input: &[u8], formatter: &mut fmt::Formatter<'_>) -> fm
         return formatter.write_str("");
     }
 
-    if input.len() <= 30 {
-        let mut output = [0_u8; 64];
+    let small_cutoff = (64 / C::Profile::ENCODED_QUANTUM) * C::Profile::INPUT_QUANTUM;
+    if input.len() <= small_cutoff {
+        let mut output = [MaybeUninit::<u8>::uninit(); 64];
         let written = C::Profile::encode_impl(input, &mut output);
         #[allow(unsafe_code)]
-        // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..written]`.
-        let encoded = unsafe { codec::ascii_to_str_mut(&mut output[..written]) };
+        // SAFETY: Binary-to-text backends write `written` initialized ASCII bytes into `output`.
+        let encoded = unsafe { codec::uninit_ascii_to_str(&output[..written]) };
         return formatter.write_str(encoded);
     }
 
-    let mut output = [0_u8; OUTPUT_CHUNK_LEN];
-    for chunk in input.chunks(INPUT_CHUNK_LEN) {
+    let input_chunk_len =
+        (OUTPUT_CHUNK_LEN / C::Profile::ENCODED_QUANTUM) * C::Profile::INPUT_QUANTUM;
+    let mut output = [MaybeUninit::<u8>::uninit(); OUTPUT_CHUNK_LEN];
+    for chunk in input.chunks(input_chunk_len) {
         let written = C::Profile::encode_impl(chunk, &mut output);
         #[allow(unsafe_code)]
-        // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..written]`.
-        let encoded = unsafe { codec::ascii_to_str_mut(&mut output[..written]) };
+        // SAFETY: Binary-to-text backends write `written` initialized ASCII bytes into `output`.
+        let encoded = unsafe { codec::uninit_ascii_to_str(&output[..written]) };
         formatter.write_str(encoded)?;
     }
 

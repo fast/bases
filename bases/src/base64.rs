@@ -22,6 +22,7 @@ use core::fmt;
 use core::hash::Hash;
 use core::hash::Hasher;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 #[cfg(feature = "std")]
 use std::io;
 
@@ -37,6 +38,7 @@ use crate::EncodeError;
 use crate::EncodedDisplay;
 use crate::Encoder;
 use crate::backend;
+use crate::backend::DecodePlan;
 use crate::codec;
 use crate::codec::sealed::Profile;
 #[cfg(feature = "std")]
@@ -372,16 +374,16 @@ where
     }
 
     #[inline]
-    fn decoded_len_impl(input: &[u8]) -> Result<usize, DecodeError> {
+    fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
         if Padding::PADDED {
-            backend::base64::decoded_len::<true>(input)
+            backend::base64::decode_plan::<true>(input)
         } else {
-            backend::base64::decoded_len::<false>(input)
+            backend::base64::decode_plan::<false>(input)
         }
     }
 
     #[inline]
-    fn encode_impl(input: &[u8], output: &mut [u8]) -> usize {
+    fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
         match (Alphabet::URL_SAFE, Padding::PADDED) {
             (false, false) => backend::base64::encode::<false, false>(input, output),
             (false, true) => backend::base64::encode::<false, true>(input, output),
@@ -391,12 +393,36 @@ where
     }
 
     #[inline]
-    fn decode_impl(input: &[u8], output: &mut [u8]) -> Result<usize, DecodeError> {
-        match (Alphabet::URL_SAFE, Padding::PADDED) {
-            (false, false) => backend::base64::decode::<false, false>(input, output),
-            (false, true) => backend::base64::decode::<false, true>(input, output),
-            (true, false) => backend::base64::decode::<true, false>(input, output),
-            (true, true) => backend::base64::decode::<true, true>(input, output),
+    fn encode_quantum_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
+        if Alphabet::URL_SAFE {
+            backend::base64::encode_quantum::<true>(input, output)
+        } else {
+            backend::base64::encode_quantum::<false>(input, output)
+        }
+    }
+
+    #[inline]
+    fn decode_with_plan_impl(
+        input: &[u8],
+        plan: DecodePlan,
+        output: &mut [MaybeUninit<u8>],
+    ) -> Result<usize, DecodeError> {
+        if Alphabet::URL_SAFE {
+            backend::base64::decode_with_plan::<true>(input, plan, output)
+        } else {
+            backend::base64::decode_with_plan::<false>(input, plan, output)
+        }
+    }
+
+    #[inline]
+    fn decode_quantum_impl(
+        input: &[u8],
+        output: &mut [MaybeUninit<u8>],
+    ) -> Result<usize, DecodeError> {
+        if Alphabet::URL_SAFE {
+            backend::base64::decode_quantum::<true>(input, output)
+        } else {
+            backend::base64::decode_quantum::<false>(input, output)
         }
     }
 

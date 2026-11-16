@@ -14,6 +14,8 @@
 
 //! Base64 backend dispatch.
 
+use core::mem::MaybeUninit;
+
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 mod aarch64;
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
@@ -25,7 +27,10 @@ mod wasm32;
 mod x86;
 
 #[inline]
-pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+pub fn encode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> (usize, usize) {
     if cfg!(miri) {
         return (0, 0);
     }
@@ -57,7 +62,7 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
 #[inline]
 pub fn decode<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize, bool) {
     if cfg!(miri) {
         return (0, 0, false);

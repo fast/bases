@@ -28,6 +28,7 @@ use core::arch::wasm32::v128_and;
 use core::arch::wasm32::v128_load;
 use core::arch::wasm32::v128_or;
 use core::arch::wasm32::v128_store;
+use core::mem::MaybeUninit;
 
 const UPPER_HEX: v128 = u8x16(
     b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'A', b'B', b'C', b'D', b'E', b'F',
@@ -52,7 +53,10 @@ const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> v12
     }
 }
 
-pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+pub fn encode<const UPPERCASE: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> (usize, usize) {
     let chunks = (input.len() / 16).min(output.len() / 32);
     if chunks == 0 {
         return (0, 0);
@@ -61,7 +65,7 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize,
     let hex_tbl = if UPPERCASE { UPPER_HEX } else { LOWER_HEX };
     let mask_0f = u8x16_splat(0x0f);
     let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr();
+    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
 
     for _ in 0..chunks {
         // SAFETY: `chunks * 16 <= input.len()`, so `in_ptr` is valid for a 16-byte load.
@@ -91,7 +95,7 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize,
 #[inline]
 pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     let chunks = (input.len() / 32).min(output.len() / 16);
     if chunks == 0 {
@@ -100,7 +104,11 @@ pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
 
     // SAFETY: `chunks * 32 <= input.len()` and `chunks * 16 <= output.len()`.
     let done = unsafe {
-        decode_wasm32::<UPPERCASE, STRICT_CASE>(input.as_ptr(), output.as_mut_ptr(), chunks)
+        decode_wasm32::<UPPERCASE, STRICT_CASE>(
+            input.as_ptr(),
+            output.as_mut_ptr().cast::<u8>(),
+            chunks,
+        )
     };
     (done * 32, done * 16)
 }

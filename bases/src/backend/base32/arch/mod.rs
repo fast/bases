@@ -14,6 +14,8 @@
 
 //! Base32 backend dispatch.
 
+use core::mem::MaybeUninit;
+
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
 mod aarch64;
 #[cfg(all(
@@ -25,7 +27,7 @@ mod x86;
 #[inline]
 pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     if cfg!(miri) {
         return (0, 0);
@@ -53,7 +55,7 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
 #[inline]
 pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     if cfg!(miri) {
         return (0, 0);

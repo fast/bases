@@ -16,6 +16,7 @@ use core::fmt;
 use core::fmt::Write;
 use std::array;
 
+use bases::Base16Lower;
 use bases::Base32;
 use bases::Base64;
 use bases::HexDisplay;
@@ -63,5 +64,21 @@ fn display_propagates_formatter_errors() {
 
     for input in [b"foo".as_slice(), b"f"] {
         assert!(write!(RejectData, "{}", Base64::display(input)).is_err());
+    }
+}
+
+#[test]
+fn display_handles_profile_cutoffs_and_chunk_boundaries() {
+    let buf: [u8; 1025] = array::from_fn(|index| (index * 37 + 13) as u8);
+    for len in [
+        1, 30, 31, 32, 33, 39, 40, 41, 47, 48, 49, 240, 512, 640, 768, 1024, 1025,
+    ] {
+        let slice = &buf[..len];
+        assert_eq!(
+            format!("{:x}", HexDisplay(slice)),
+            Base16Lower::encode(slice)
+        );
+        assert_eq!(Base32::display(slice).to_string(), Base32::encode(slice));
+        assert_eq!(Base64::display(slice).to_string(), Base64::encode(slice));
     }
 }

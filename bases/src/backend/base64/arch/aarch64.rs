@@ -48,6 +48,7 @@ use core::arch::aarch64::vst1q_u8;
 use core::arch::aarch64::vst3q_u8;
 use core::arch::aarch64::vst4q_u8;
 use core::arch::aarch64::vsubq_u8;
+use core::mem::MaybeUninit;
 use core::ptr;
 
 const STANDARD: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -78,7 +79,10 @@ const ROLL_STD: [u8; 16] = [0, 0, 19, 4, 0xbf, 0xbf, 0xb9, 0xb9, 0, 0, 0, 0, 0, 
 const ROLL_URL: [u8; 16] = [0, 0, 17, 4, 0xbf, 0xbf, 0xb9, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0];
 
 #[inline]
-pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+pub fn encode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> (usize, usize) {
     let chunks_12 = (input.len() / 12).min(output.len() / 16);
     if chunks_12 == 0 {
         return (0, 0);
@@ -86,11 +90,12 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
 
     let consumed_in = chunks_12 * 12;
     let consumed_out = chunks_12 * 16;
-    // SAFETY: `consumed_in <= input.len()`, `consumed_out <= output.len()`, and NEON is baseline.
+    // SAFETY: `consumed_in <= input.len()`, `consumed_out <= output.len()`, `MaybeUninit<u8>` has
+    // the same layout as `u8`, and NEON is baseline.
     unsafe {
         encode_neon::<URL_SAFE_ALPHABET>(
             input.as_ptr(),
-            output.as_mut_ptr(),
+            output.as_mut_ptr().cast::<u8>(),
             consumed_in,
             input.len(),
         );
@@ -101,17 +106,18 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
 #[inline]
 pub fn decode<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize, bool) {
     let limit_16 = (input.len() / 16).min(output.len() / 12);
     if limit_16 == 0 {
         return (0, 0, false);
     }
 
-    // SAFETY: `limit_16 * 16 <= input.len()` and `limit_16 * 12 <= output.len()`, and NEON is
-    // baseline.
-    let (done_16, had_invalid) =
-        unsafe { decode_neon::<URL_SAFE_ALPHABET>(input.as_ptr(), output.as_mut_ptr(), limit_16) };
+    // SAFETY: `limit_16 * 16 <= input.len()`, `limit_16 * 12 <= output.len()`, `MaybeUninit<u8>`
+    // has the same layout as `u8`, and NEON is baseline.
+    let (done_16, had_invalid) = unsafe {
+        decode_neon::<URL_SAFE_ALPHABET>(input.as_ptr(), output.as_mut_ptr().cast::<u8>(), limit_16)
+    };
     (done_16 * 16, done_16 * 12, had_invalid)
 }
 

@@ -151,6 +151,34 @@ fn reports_small_output_buffers_without_panicking() {
             available: 2,
         })
     );
+
+    // Length and trailing-padding validation precede OutputTooSmall; byte validation follows it.
+    assert_eq!(
+        Base64::decode_into(b"Zg", &mut []),
+        Err(DecodeSliceError::Decode(DecodeError::InvalidLength {
+            length: 2
+        }))
+    );
+    assert_eq!(
+        Base64::decode_into(b"A===", &mut []),
+        Err(DecodeSliceError::Decode(DecodeError::InvalidPadding {
+            index: 1
+        }))
+    );
+    assert_eq!(
+        Base32::decode_into(b"AA======", &mut [0_u8; 0]),
+        Err(DecodeSliceError::OutputTooSmall {
+            required: 1,
+            available: 0,
+        })
+    );
+    assert_eq!(
+        Base64::decode_into(b"Zm!v", &mut decoded),
+        Err(DecodeSliceError::OutputTooSmall {
+            required: 3,
+            available: 2,
+        })
+    );
 }
 
 fn assert_decode_error<C: bases::Codec>(input: &[u8], expected: DecodeError) {

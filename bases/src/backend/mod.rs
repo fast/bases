@@ -22,7 +22,22 @@ pub mod base16;
 pub mod base32;
 pub mod base64;
 
+use core::mem::MaybeUninit;
+
 use crate::DecodeError;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DecodePlan {
+    pub required: usize,
+    pub data_len: usize,
+    pub complete_len: usize,
+    pub padding: usize,
+}
+
+#[inline(always)]
+pub(crate) fn write_bytes<const N: usize>(dst: &mut [MaybeUninit<u8>], src: [u8; N]) {
+    dst[..N].copy_from_slice(&src.map(MaybeUninit::new));
+}
 
 #[inline]
 pub(crate) fn invalid_byte_error(byte: u8, index: usize) -> DecodeError {

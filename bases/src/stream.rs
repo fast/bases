@@ -20,6 +20,7 @@ use crate::DecodeError;
 use crate::DecodeSliceError;
 use crate::EncodeError;
 use crate::FinishError;
+use crate::backend::DecodePlan;
 use crate::codec;
 use crate::codec::sealed::Profile;
 
@@ -81,6 +82,11 @@ impl<C: Codec> Encoder<C> {
         }
     }
 
+    #[cfg(feature = "std")]
+    pub(crate) fn pending_len(&self) -> usize {
+        self.pending_len
+    }
+
     /// Computes the exact output length of the next [`update`](Self::update).
     ///
     /// Includes input buffered by earlier updates.
@@ -135,6 +141,8 @@ impl<C: Codec> Encoder<C> {
         }
 
         let input_quantum = C::Profile::INPUT_QUANTUM;
+        let encoded_quantum = C::Profile::ENCODED_QUANTUM;
+        let out = &mut output[..required];
         let mut input_index = 0;
         let mut output_index = 0;
 
@@ -147,9 +155,9 @@ impl<C: Codec> Encoder<C> {
             input_index += taken;
 
             if self.pending_len == input_quantum {
-                output_index += C::Profile::encode_impl(
+                output_index += C::Profile::encode_quantum_impl(
                     &self.pending[..input_quantum],
-                    &mut output[output_index..],
+                    codec::as_uninit_slice(&mut out[output_index..output_index + encoded_quantum]),
                 );
                 self.pending_len = 0;
             }
@@ -161,7 +169,7 @@ impl<C: Codec> Encoder<C> {
             if complete_len != 0 {
                 output_index += C::Profile::encode_impl(
                     &remaining[..complete_len],
-                    &mut output[output_index..],
+                    codec::as_uninit_slice(&mut out[output_index..]),
                 );
             }
 
@@ -172,8 +180,8 @@ impl<C: Codec> Encoder<C> {
 
         debug_assert_eq!(output_index, required);
         #[allow(unsafe_code)]
-        // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..output_index]`.
-        Ok(unsafe { codec::ascii_to_str_mut(&mut output[..output_index]) })
+        // SAFETY: Binary-to-text backends always write ASCII bytes into `out`.
+        Ok(unsafe { codec::ascii_to_str_mut(out) })
     }
 
     /// Finishes the stream, returning the final encoded prefix of `output`.
@@ -296,9 +304,11 @@ impl<C: Codec> Decoder<C> {
             return Ok(0);
         }
 
-        C::Profile::decoded_len_impl(&self.pending[..self.pending_len]).map_err(|error| {
-            adjust_decode_error(error, self.pending_offset(), self.total_input_len)
-        })
+        C::Profile::decode_plan_impl(&self.pending[..self.pending_len])
+            .map(|plan| plan.required)
+            .map_err(|error| {
+                adjust_decode_error(error, self.pending_offset(), self.total_input_len)
+            })
     }
 
     /// Decodes another input chunk, returning the written prefix of `output`.
@@ -339,7 +349,7 @@ impl<C: Codec> Decoder<C> {
         let process_len = combined_len / encoded_quantum * encoded_quantum;
         let pending_offset = self.pending_offset();
 
-        let (padding_reduction, padding_index) = if C::Profile::PADDED {
+        let (padding, padding_reduction, padding_index) = if C::Profile::PADDED {
             analyze_padding::<C>(
                 &self.pending[..self.pending_len],
                 input,
@@ -347,11 +357,12 @@ impl<C: Codec> Decoder<C> {
                 pending_offset,
             )?
         } else {
-            (0, None)
+            (0, 0, None)
         };
 
+        let input_quantum = C::Profile::INPUT_QUANTUM;
         let complete_quanta = process_len / encoded_quantum;
-        let required = complete_quanta * C::Profile::INPUT_QUANTUM - padding_reduction;
+        let required = complete_quanta * input_quantum - padding_reduction;
         if output.len() < required {
             return Err(DecodeSliceError::OutputTooSmall {
                 required,
@@ -359,6 +370,7 @@ impl<C: Codec> Decoder<C> {
             });
         }
 
+        let out = &mut output[..required];
         // Commit state only after the whole chunk validates, so a late error
         // leaves buffered input and global offsets available for retry.
         let mut pending = self.pending;
@@ -374,11 +386,32 @@ impl<C: Codec> Decoder<C> {
             input_index += taken;
 
             if pending_len == encoded_quantum {
-                output_index += C::Profile::decode_impl(
-                    &pending[..encoded_quantum],
-                    &mut output[output_index..],
-                )
+                let remaining_complete_len =
+                    (input.len() - input_index) / encoded_quantum * encoded_quantum;
+                let written = if padding != 0 && remaining_complete_len == 0 {
+                    let plan = DecodePlan {
+                        required: input_quantum - padding_reduction,
+                        data_len: encoded_quantum - padding,
+                        complete_len: 0,
+                        padding,
+                    };
+                    C::Profile::decode_with_plan_impl(
+                        &pending[..encoded_quantum],
+                        plan,
+                        codec::as_uninit_slice(
+                            &mut out[output_index..output_index + plan.required],
+                        ),
+                    )
+                } else {
+                    C::Profile::decode_quantum_impl(
+                        &pending[..encoded_quantum],
+                        codec::as_uninit_slice(
+                            &mut out[output_index..output_index + input_quantum],
+                        ),
+                    )
+                }
                 .map_err(|error| adjust_decode_error(error, pending_offset, total_input_len))?;
+                output_index += written;
                 pending_len = 0;
             }
         }
@@ -388,9 +421,19 @@ impl<C: Codec> Decoder<C> {
             let complete_len = remaining.len() / encoded_quantum * encoded_quantum;
             if complete_len != 0 {
                 let offset = self.total_input_len + input_index;
-                output_index += C::Profile::decode_impl(
+                let chunk_required =
+                    (complete_len / encoded_quantum) * input_quantum - padding_reduction;
+                let chunk_data_len = complete_len - padding;
+                let plan = DecodePlan {
+                    required: chunk_required,
+                    data_len: chunk_data_len,
+                    complete_len: (chunk_data_len / encoded_quantum) * encoded_quantum,
+                    padding,
+                };
+                output_index += C::Profile::decode_with_plan_impl(
                     &remaining[..complete_len],
-                    &mut output[output_index..],
+                    plan,
+                    codec::as_uninit_slice(&mut out[output_index..]),
                 )
                 .map_err(|error| adjust_decode_error(error, offset, total_input_len))?;
             }
@@ -406,7 +449,7 @@ impl<C: Codec> Decoder<C> {
         self.padding_index = padding_index;
 
         debug_assert_eq!(output_index, required);
-        Ok(&mut output[..output_index])
+        Ok(out)
     }
 
     /// Validates the final fragment, returning the decoded prefix of `output`.
@@ -455,11 +498,11 @@ fn analyze_padding<C: Codec>(
     input: &[u8],
     process_len: usize,
     stream_offset: usize,
-) -> Result<(usize, Option<usize>), DecodeError> {
+) -> Result<(usize, usize, Option<usize>), DecodeError> {
     let combined_len = pending.len() + input.len();
 
     if process_len == 0 {
-        return Ok((0, None));
+        return Ok((0, 0, None));
     }
 
     let reject_padding = |start: usize| {
@@ -479,7 +522,7 @@ fn analyze_padding<C: Codec>(
     }
     if process_len != combined_len {
         reject_padding(process_len - C::Profile::ENCODED_QUANTUM)?;
-        return Ok((0, None));
+        return Ok((0, 0, None));
     }
 
     let mut padding = 0;
@@ -489,7 +532,7 @@ fn analyze_padding<C: Codec>(
         padding += 1;
     }
     if padding == 0 {
-        return Ok((0, None));
+        return Ok((0, 0, None));
     }
 
     let first_padding = combined_len - padding;
@@ -497,7 +540,7 @@ fn analyze_padding<C: Codec>(
         C::Profile::decoded_padding_reduction(padding).ok_or(DecodeError::InvalidPadding {
             index: stream_offset + first_padding,
         })?;
-    Ok((reduction, Some(stream_offset + first_padding)))
+    Ok((padding, reduction, Some(stream_offset + first_padding)))
 }
 
 fn combined_byte(pending: &[u8], input: &[u8], index: usize) -> u8 {

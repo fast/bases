@@ -41,6 +41,7 @@ use core::arch::wasm32::v128_and;
 use core::arch::wasm32::v128_load;
 use core::arch::wasm32::v128_or;
 use core::arch::wasm32::v128_store;
+use core::mem::MaybeUninit;
 use core::ptr;
 
 const SHUF_12: v128 = u8x16(1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10);
@@ -64,7 +65,10 @@ const ROLL_STD: v128 = u8x16(0, 0, 19, 4, 0xbf, 0xbf, 0xb9, 0xb9, 0, 0, 0, 0, 0,
 const ROLL_URL: v128 = u8x16(0, 0, 17, 4, 0xbf, 0xbf, 0xb9, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0);
 
 #[inline]
-pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+pub fn encode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> (usize, usize) {
     if input.len() < 16 {
         return (0, 0);
     }
@@ -87,7 +91,7 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
     let c13 = u8x16_splat(13);
 
     let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr();
+    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
 
     for _ in 0..chunks {
         // SAFETY: `chunks > 0` implies `input.len() >= (chunks - 1) * 12 + 16`.
@@ -116,7 +120,7 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
 #[inline]
 pub fn decode<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize, bool) {
     let chunks = (input.len() / 16).min(output.len() / 12);
     if chunks == 0 {
@@ -124,8 +128,9 @@ pub fn decode<const URL_SAFE_ALPHABET: bool>(
     }
 
     // SAFETY: `chunks * 16 <= input.len()` and `chunks * 12 <= output.len()`.
-    let (done, had_invalid) =
-        unsafe { decode_wasm32::<URL_SAFE_ALPHABET>(input.as_ptr(), output.as_mut_ptr(), chunks) };
+    let (done, had_invalid) = unsafe {
+        decode_wasm32::<URL_SAFE_ALPHABET>(input.as_ptr(), output.as_mut_ptr().cast::<u8>(), chunks)
+    };
     (done * 16, done * 12, had_invalid)
 }
 

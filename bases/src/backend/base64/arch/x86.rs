@@ -18,6 +18,7 @@
 use core::arch::x86 as x86_arch;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64 as x86_arch;
+use core::mem::MaybeUninit;
 use core::ptr;
 #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
 use std::arch::is_x86_feature_detected;
@@ -108,7 +109,14 @@ const ROLL_STD: [i8; 16] = [0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0
 const ROLL_URL: [i8; 16] = [0, 0, 17, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0];
 
 #[inline]
-pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+pub fn encode<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> (usize, usize) {
+    if input.len() < 16 || output.len() < 16 {
+        return (0, 0);
+    }
+
     #[cfg(target_feature = "avx2")]
     {
         // SAFETY: `target_feature = "avx2"` is enabled at compile time.
@@ -143,7 +151,7 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
 #[inline]
 pub fn decode<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize, bool) {
     let chunks_16 = (input.len() / 16).min(output.len() / 12);
     if chunks_16 == 0 {
@@ -151,7 +159,7 @@ pub fn decode<const URL_SAFE_ALPHABET: bool>(
     }
 
     let in_ptr = input.as_ptr();
-    let out_ptr = output.as_mut_ptr();
+    let out_ptr = output.as_mut_ptr().cast::<u8>();
     let (done_16, had_invalid) = {
         #[cfg(target_feature = "avx2")]
         {
@@ -321,7 +329,7 @@ unsafe fn encode_chunk_12(
 #[target_feature(enable = "ssse3")]
 unsafe fn encode_ssse3<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     if input.len() < 16 {
         return (0, 0);
@@ -332,7 +340,7 @@ unsafe fn encode_ssse3<const URL_SAFE_ALPHABET: bool>(
     }
 
     let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr();
+    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
     // SAFETY: `chunks > 0` implies `input.len() >= (chunks - 1) * 12 + 16` and `output.len() >=
     // chunks * 16`.
     unsafe {
@@ -356,7 +364,7 @@ unsafe fn encode_ssse3<const URL_SAFE_ALPHABET: bool>(
 #[target_feature(enable = "avx2")]
 unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     let chunks = if input.len() >= 28 {
         ((input.len() - 4) / 24).min(output.len() / 32)
@@ -385,7 +393,7 @@ unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
             let offset_lut = _mm256_set_m128i(lut_128, lut_128);
 
             let mut in_ptr = input.as_ptr();
-            let mut out_ptr = output.as_mut_ptr();
+            let mut out_ptr = output.as_mut_ptr().cast::<u8>();
             for _ in 0..chunks {
                 let raw = _mm256_set_m128i(
                     _mm_loadu_si128(in_ptr.add(12).cast()),
@@ -408,7 +416,7 @@ unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
         if input_index + 16 <= input.len() && output_index + 16 <= output.len() {
             encode_chunk_12(
                 input.as_ptr().add(input_index),
-                output.as_mut_ptr().add(output_index),
+                output.as_mut_ptr().cast::<u8>().add(output_index),
                 sh_128,
                 m0_128,
                 ml0_128,

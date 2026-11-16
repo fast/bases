@@ -22,6 +22,7 @@ use core::fmt;
 use core::hash::Hash;
 use core::hash::Hasher;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 #[cfg(feature = "std")]
 use std::io;
 
@@ -37,6 +38,7 @@ use crate::EncodeError;
 use crate::EncodedDisplay;
 use crate::Encoder;
 use crate::backend;
+use crate::backend::DecodePlan;
 use crate::codec;
 use crate::codec::sealed::Profile;
 #[cfg(feature = "std")]
@@ -344,12 +346,12 @@ where
     }
 
     #[inline]
-    fn decoded_len_impl(input: &[u8]) -> Result<usize, DecodeError> {
-        backend::base16::decoded_len(input)
+    fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
+        backend::base16::decode_plan(input)
     }
 
     #[inline]
-    fn encode_impl(input: &[u8], output: &mut [u8]) -> usize {
+    fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
         if Case::UPPERCASE {
             backend::base16::encode::<true>(input, output)
         } else {
@@ -358,12 +360,40 @@ where
     }
 
     #[inline]
-    fn decode_impl(input: &[u8], output: &mut [u8]) -> Result<usize, DecodeError> {
+    fn encode_quantum_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
+        if Case::UPPERCASE {
+            backend::base16::encode_quantum::<true>(input, output)
+        } else {
+            backend::base16::encode_quantum::<false>(input, output)
+        }
+    }
+
+    #[inline]
+    fn decode_with_plan_impl(
+        input: &[u8],
+        plan: DecodePlan,
+        output: &mut [MaybeUninit<u8>],
+    ) -> Result<usize, DecodeError> {
         match (Case::UPPERCASE, DecodeCase::STRICT) {
-            (true, true) => backend::base16::decode::<true, true>(input, output),
-            (true, false) => backend::base16::decode::<true, false>(input, output),
-            (false, true) => backend::base16::decode::<false, true>(input, output),
-            (false, false) => backend::base16::decode::<false, false>(input, output),
+            (true, true) => backend::base16::decode_with_plan::<true, true>(input, plan, output),
+            (true, false) => backend::base16::decode_with_plan::<true, false>(input, plan, output),
+            (false, true) => backend::base16::decode_with_plan::<false, true>(input, plan, output),
+            (false, false) => {
+                backend::base16::decode_with_plan::<false, false>(input, plan, output)
+            }
+        }
+    }
+
+    #[inline]
+    fn decode_quantum_impl(
+        input: &[u8],
+        output: &mut [MaybeUninit<u8>],
+    ) -> Result<usize, DecodeError> {
+        match (Case::UPPERCASE, DecodeCase::STRICT) {
+            (true, true) => backend::base16::decode_quantum::<true, true>(input, output),
+            (true, false) => backend::base16::decode_quantum::<true, false>(input, output),
+            (false, true) => backend::base16::decode_quantum::<false, true>(input, output),
+            (false, false) => backend::base16::decode_quantum::<false, false>(input, output),
         }
     }
 

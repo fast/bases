@@ -18,6 +18,7 @@
 use core::arch::x86 as x86_arch;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64 as x86_arch;
+use core::mem::MaybeUninit;
 use core::ptr;
 #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
 use std::arch::is_x86_feature_detected;
@@ -125,8 +126,12 @@ const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> [i8
 #[inline]
 pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
+    if input.len() < 16 || output.len() < 16 {
+        return (0, 0);
+    }
+
     #[cfg(target_feature = "avx2")]
     {
         // SAFETY: `target_feature = "avx2"` is enabled at compile time.
@@ -161,7 +166,7 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
 #[inline]
 pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     let chunks_16 = (input.len() / 16).min(output.len() / 10);
     if chunks_16 == 0 {
@@ -169,7 +174,7 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
     }
 
     let in_ptr = input.as_ptr();
-    let out_ptr = output.as_mut_ptr();
+    let out_ptr = output.as_mut_ptr().cast::<u8>();
     let done_16 = {
         #[cfg(target_feature = "avx2")]
         {
@@ -371,7 +376,7 @@ unsafe fn encode_chunk_16(
 #[target_feature(enable = "ssse3")]
 unsafe fn encode_ssse3<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     if input.len() < 16 {
         return (0, 0);
@@ -382,7 +387,7 @@ unsafe fn encode_ssse3<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     }
 
     let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr();
+    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
     // SAFETY: `chunks > 0` guarantees `input.len() >= (chunks - 1) * 10 + 16` and `output.len() >=
     // chunks * 16`.
     unsafe {
@@ -406,7 +411,7 @@ unsafe fn encode_ssse3<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
 #[target_feature(enable = "avx2")]
 unsafe fn encode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     let chunks = if input.len() >= 26 {
         ((input.len() - 6) / 20).min(output.len() / 32)
@@ -434,7 +439,7 @@ unsafe fn encode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
             let diff = _mm256_set_m128i(df_128, df_128);
 
             let mut in_ptr = input.as_ptr();
-            let mut out_ptr = output.as_mut_ptr();
+            let mut out_ptr = output.as_mut_ptr().cast::<u8>();
             for _ in 0..chunks {
                 let raw = _mm256_set_m128i(
                     _mm_loadu_si128(in_ptr.add(10).cast()),
@@ -456,7 +461,7 @@ unsafe fn encode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
         if input_index + 16 <= input.len() && output_index + 16 <= output.len() {
             encode_chunk_16(
                 input.as_ptr().add(input_index),
-                output.as_mut_ptr().add(output_index),
+                output.as_mut_ptr().cast::<u8>().add(output_index),
                 w_shuf_128,
                 em_128,
                 eml_128,

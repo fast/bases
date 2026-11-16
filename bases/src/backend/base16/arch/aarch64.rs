@@ -38,6 +38,7 @@ use core::arch::aarch64::vuzp1_u8;
 use core::arch::aarch64::vuzp2_u8;
 use core::arch::aarch64::vzip1q_u8;
 use core::arch::aarch64::vzip2q_u8;
+use core::mem::MaybeUninit;
 
 const UPPER_HEX: [u8; 16] = *b"0123456789ABCDEF";
 const LOWER_HEX: [u8; 16] = *b"0123456789abcdef";
@@ -59,32 +60,39 @@ const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'s
 }
 
 #[inline]
-pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
+pub fn encode<const UPPERCASE: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> (usize, usize) {
     let consumed = input.len().min(output.len() / 2) & !7;
     if consumed == 0 {
         return (0, 0);
     }
 
-    // SAFETY: `consumed <= input.len()`, `consumed * 2 <= output.len()`, and NEON is baseline on
-    // aarch64.
-    unsafe { encode_neon::<UPPERCASE>(input.as_ptr(), output.as_mut_ptr(), consumed) };
+    // SAFETY: `consumed <= input.len()`, `consumed * 2 <= output.len()`, `MaybeUninit<u8>` has the
+    // same layout as `u8`, and NEON is baseline on aarch64.
+    unsafe { encode_neon::<UPPERCASE>(input.as_ptr(), output.as_mut_ptr().cast::<u8>(), consumed) };
     (consumed, consumed * 2)
 }
 
 #[inline]
 pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     let chunks_16 = (input.len() / 16).min(output.len() / 8);
     if chunks_16 == 0 {
         return (0, 0);
     }
 
-    // SAFETY: `chunks_16 * 16 <= input.len()` and `chunks_16 * 8 <= output.len()`, and NEON is
-    // baseline on aarch64.
+    // SAFETY: `chunks_16 * 16 <= input.len()`, `chunks_16 * 8 <= output.len()`, `MaybeUninit<u8>`
+    // has the same layout as `u8`, and NEON is baseline on aarch64.
     let done_16 = unsafe {
-        decode_neon::<UPPERCASE, STRICT_CASE>(input.as_ptr(), output.as_mut_ptr(), chunks_16)
+        decode_neon::<UPPERCASE, STRICT_CASE>(
+            input.as_ptr(),
+            output.as_mut_ptr().cast::<u8>(),
+            chunks_16,
+        )
     };
     (done_16 * 16, done_16 * 8)
 }

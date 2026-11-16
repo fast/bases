@@ -14,8 +14,12 @@
 
 //! Base64 execution backend.
 
+use core::mem::MaybeUninit;
+
 use crate::DecodeError;
 use crate::backend;
+use crate::backend::DecodePlan;
+use crate::codec;
 
 #[allow(unsafe_code)]
 mod arch;
@@ -71,23 +75,21 @@ pub const fn max_decoded_len(input_len: usize) -> usize {
     complete + trailing
 }
 
-/// Validates Base64 input length and padding shape, returning the exact decoded length.
+/// Validates Base64 input length and padding shape, returning the exact decode plan.
 #[inline]
-pub fn decoded_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
-    decoded_len_and_padding::<PADDED>(input).map(|(len, _)| len)
-}
-
-#[inline]
-fn decoded_len_and_padding<const PADDED: bool>(
-    input: &[u8],
-) -> Result<(usize, usize), DecodeError> {
+pub fn decode_plan<const PADDED: bool>(input: &[u8]) -> Result<DecodePlan, DecodeError> {
     if PADDED {
         let len = input.len();
         if len % 4 != 0 {
             return Err(DecodeError::InvalidLength { length: len });
         }
         if len == 0 {
-            return Ok((0, 0));
+            return Ok(DecodePlan {
+                required: 0,
+                data_len: 0,
+                complete_len: 0,
+                padding: 0,
+            });
         }
 
         let padding = if input[len - 1] != b'=' {
@@ -104,7 +106,14 @@ fn decoded_len_and_padding<const PADDED: bool>(
                 index: len - padding,
             });
         }
-        Ok((len / 4 * 3 - padding, padding))
+        let data_len = len - padding;
+        let complete_len = (data_len / 4) * 4;
+        Ok(DecodePlan {
+            required: len / 4 * 3 - padding,
+            data_len,
+            complete_len,
+            padding,
+        })
     } else {
         let trailing = match input.len() % 4 {
             0 => 0,
@@ -116,7 +125,13 @@ fn decoded_len_and_padding<const PADDED: bool>(
                 });
             }
         };
-        Ok((input.len() / 4 * 3 + trailing, 0))
+        let complete_len = (input.len() / 4) * 4;
+        Ok(DecodePlan {
+            required: input.len() / 4 * 3 + trailing,
+            data_len: input.len(),
+            complete_len,
+            padding: 0,
+        })
     }
 }
 
@@ -124,7 +139,7 @@ fn decoded_len_and_padding<const PADDED: bool>(
 #[inline]
 pub fn encode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> usize {
     let required = encoded_len::<PADDED>(input.len()).expect("encoded length overflow");
     assert!(output.len() >= required, "output buffer too small");
@@ -133,61 +148,75 @@ pub fn encode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     encode_scalar_from::<URL_SAFE_ALPHABET, PADDED>(input, output, input_index, output_index)
 }
 
+/// Encodes a single 3-byte Base64 quantum into `output`.
 #[inline]
-fn decode_complete_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
-    if PADDED {
-        if input.len() % 4 != 0 {
-            return Err(DecodeError::InvalidLength {
-                length: input.len(),
-            });
-        }
-        if input[input.len() - 1] == b'=' {
-            Ok(input.len() - 4)
-        } else {
-            Ok(input.len())
-        }
+pub fn encode_quantum<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> usize {
+    let s: &[u8; 3] = input.try_into().expect("3-byte slice fits in [u8; 3]");
+    debug_assert!(output.len() >= 4);
+    let alphabet = if URL_SAFE_ALPHABET {
+        URL_SAFE
     } else {
-        match input.len() % 4 {
-            0 | 2 | 3 => Ok((input.len() / 4) * 4),
-            _ => Err(DecodeError::InvalidLength {
-                length: input.len(),
-            }),
-        }
-    }
+        STANDARD
+    };
+    let w = u32::from_be_bytes([0, s[0], s[1], s[2]]);
+    backend::write_bytes(output, encode_quantum_3(alphabet, w));
+    4
 }
 
-/// Decodes Base64 `input` into `output`, returning the number of bytes written.
+/// Decodes Base64 `input` into `output` using `plan`, returning the number of bytes written.
 #[inline]
-pub fn decode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
+pub fn decode_with_plan<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    plan: DecodePlan,
+    output: &mut [MaybeUninit<u8>],
 ) -> Result<usize, DecodeError> {
-    if input.is_empty() {
+    if plan.data_len == 0 {
         return Ok(0);
     }
-
-    let complete_len = decode_complete_len::<PADDED>(input)?;
-    assert!(
-        output.len() >= (complete_len / 4) * 3,
-        "output buffer too small"
-    );
+    assert!(output.len() >= plan.required, "output buffer too small");
+    let out = &mut output[..plan.required];
 
     let (input_index, output_index, had_invalid) =
-        arch::decode::<URL_SAFE_ALPHABET>(&input[..complete_len], output);
-    decode_from::<URL_SAFE_ALPHABET, PADDED>(
+        arch::decode::<URL_SAFE_ALPHABET>(&input[..plan.complete_len], out);
+    decode_from::<URL_SAFE_ALPHABET>(
         input,
-        output,
-        complete_len,
+        out,
+        plan.data_len,
+        plan.complete_len,
         input_index,
         output_index,
         had_invalid,
     )
 }
 
+/// Decodes a single complete 4-byte Base64 quantum into `output`.
 #[inline]
-fn decode_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
+pub fn decode_quantum<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
+) -> Result<usize, DecodeError> {
+    let luts = if URL_SAFE_ALPHABET {
+        &URL_DECODE_LUTS
+    } else {
+        &STD_DECODE_LUTS
+    };
+    let s: &[u8; 4] = input.try_into().expect("4-byte slice fits in [u8; 4]");
+    debug_assert!(output.len() >= 3);
+    let Some(decoded) = decode_chunk_4(luts, s) else {
+        return Err(find_invalid_in_slice(s, 0, &luts[3]));
+    };
+    backend::write_bytes(output, decoded);
+    Ok(3)
+}
+
+#[inline]
+fn decode_from<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+    data_len: usize,
     complete_len: usize,
     input_index: usize,
     output_index: usize,
@@ -213,31 +242,9 @@ fn decode_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         output_index,
     )?;
 
-    if PADDED {
-        if complete_len != input.len() {
-            let last = &input[complete_len..];
-            let padding = if last[2] != b'=' {
-                1
-            } else if last[1] != b'=' {
-                2
-            } else if last[0] != b'=' {
-                return Err(DecodeError::InvalidPadding {
-                    index: input.len() - 3,
-                });
-            } else {
-                return Err(DecodeError::InvalidPadding {
-                    index: input.len() - 4,
-                });
-            };
-            output_index += decode_tail::<URL_SAFE_ALPHABET>(
-                &last[..4 - padding],
-                complete_len,
-                &mut output[output_index..],
-            )?;
-        }
-    } else if complete_len != input.len() {
+    if complete_len != data_len {
         output_index += decode_tail::<URL_SAFE_ALPHABET>(
-            &input[complete_len..],
+            &input[complete_len..data_len],
             complete_len,
             &mut output[output_index..],
         )?;
@@ -251,22 +258,20 @@ fn decode_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
 pub fn decode_in_place<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     buf: &mut [u8],
 ) -> Result<usize, DecodeError> {
-    let (required, padding) = decoded_len_and_padding::<PADDED>(buf)?;
-    let data_len = buf.len() - padding;
-    let complete_len = (data_len / 4) * 4;
+    let plan = decode_plan::<PADDED>(buf)?;
 
     let (input_index, output_index, had_invalid) =
-        arch::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len);
+        arch::decode_in_place::<URL_SAFE_ALPHABET>(buf, plan.complete_len);
     let written = decode_in_place_from::<URL_SAFE_ALPHABET>(
         buf,
-        data_len,
-        complete_len,
+        plan.data_len,
+        plan.complete_len,
         input_index,
         output_index,
         had_invalid,
     )?;
 
-    debug_assert_eq!(written, required);
+    debug_assert_eq!(written, plan.required);
     Ok(written)
 }
 
@@ -306,7 +311,7 @@ fn decode_in_place_from<const URL_SAFE_ALPHABET: bool>(
         output_index += decode_tail::<URL_SAFE_ALPHABET>(
             &tail[..tail_len],
             complete_len,
-            &mut buf[output_index..],
+            codec::as_uninit_slice(&mut buf[output_index..]),
         )?;
     }
 
@@ -314,7 +319,7 @@ fn decode_in_place_from<const URL_SAFE_ALPHABET: bool>(
 }
 
 #[inline]
-fn encode_quantum(alphabet: &[u8; 64], w: u32) -> [u8; 4] {
+fn encode_quantum_3(alphabet: &[u8; 64], w: u32) -> [u8; 4] {
     [
         alphabet[((w >> 18) & 0x3f) as usize],
         alphabet[((w >> 12) & 0x3f) as usize],
@@ -326,7 +331,7 @@ fn encode_quantum(alphabet: &[u8; 64], w: u32) -> [u8; 4] {
 #[inline]
 fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
     mut input_index: usize,
     mut output_index: usize,
 ) -> usize {
@@ -342,14 +347,14 @@ fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         let w1 = u32::from_be_bytes([0, s[3], s[4], s[5]]);
         let w2 = u32::from_be_bytes([0, s[6], s[7], s[8]]);
         let w3 = u32::from_be_bytes([0, s[9], s[10], s[11]]);
-        let e0 = encode_quantum(alphabet, w0);
-        let e1 = encode_quantum(alphabet, w1);
-        let e2 = encode_quantum(alphabet, w2);
-        let e3 = encode_quantum(alphabet, w3);
-        output[output_index..output_index + 4].copy_from_slice(&e0);
-        output[output_index + 4..output_index + 8].copy_from_slice(&e1);
-        output[output_index + 8..output_index + 12].copy_from_slice(&e2);
-        output[output_index + 12..output_index + 16].copy_from_slice(&e3);
+        let e0 = encode_quantum_3(alphabet, w0);
+        let e1 = encode_quantum_3(alphabet, w1);
+        let e2 = encode_quantum_3(alphabet, w2);
+        let e3 = encode_quantum_3(alphabet, w3);
+        backend::write_bytes(&mut output[output_index..], e0);
+        backend::write_bytes(&mut output[output_index + 4..], e1);
+        backend::write_bytes(&mut output[output_index + 8..], e2);
+        backend::write_bytes(&mut output[output_index + 12..], e3);
         input_index += 12;
         output_index += 16;
     }
@@ -357,16 +362,19 @@ fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     while input_index + 6 <= input.len() {
         let s = &input[input_index..input_index + 6];
         let w = u64::from_be_bytes([0, 0, s[0], s[1], s[2], s[3], s[4], s[5]]);
-        output[output_index..output_index + 8].copy_from_slice(&[
-            alphabet[((w >> 42) & 0x3f) as usize],
-            alphabet[((w >> 36) & 0x3f) as usize],
-            alphabet[((w >> 30) & 0x3f) as usize],
-            alphabet[((w >> 24) & 0x3f) as usize],
-            alphabet[((w >> 18) & 0x3f) as usize],
-            alphabet[((w >> 12) & 0x3f) as usize],
-            alphabet[((w >> 6) & 0x3f) as usize],
-            alphabet[(w & 0x3f) as usize],
-        ]);
+        backend::write_bytes(
+            &mut output[output_index..],
+            [
+                alphabet[((w >> 42) & 0x3f) as usize],
+                alphabet[((w >> 36) & 0x3f) as usize],
+                alphabet[((w >> 30) & 0x3f) as usize],
+                alphabet[((w >> 24) & 0x3f) as usize],
+                alphabet[((w >> 18) & 0x3f) as usize],
+                alphabet[((w >> 12) & 0x3f) as usize],
+                alphabet[((w >> 6) & 0x3f) as usize],
+                alphabet[(w & 0x3f) as usize],
+            ],
+        );
         input_index += 6;
         output_index += 8;
     }
@@ -374,29 +382,30 @@ fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     while input_index + 3 <= input.len() {
         let s = &input[input_index..input_index + 3];
         let w = u32::from_be_bytes([0, s[0], s[1], s[2]]);
-        output[output_index..output_index + 4].copy_from_slice(&encode_quantum(alphabet, w));
+        backend::write_bytes(&mut output[output_index..], encode_quantum_3(alphabet, w));
         input_index += 3;
         output_index += 4;
     }
 
     match &input[input_index..] {
         [first] => {
-            output[output_index] = alphabet[usize::from(first >> 2)];
-            output[output_index + 1] = alphabet[usize::from((first << 4) & 0x3f)];
+            output[output_index].write(alphabet[usize::from(first >> 2)]);
+            output[output_index + 1].write(alphabet[usize::from((first << 4) & 0x3f)]);
             output_index += 2;
             if PADDED {
-                output[output_index] = b'=';
-                output[output_index + 1] = b'=';
+                output[output_index].write(b'=');
+                output[output_index + 1].write(b'=');
                 output_index += 2;
             }
         }
         [first, second] => {
-            output[output_index] = alphabet[usize::from(first >> 2)];
-            output[output_index + 1] = alphabet[usize::from(((first << 4) | (second >> 4)) & 0x3f)];
-            output[output_index + 2] = alphabet[usize::from((second << 2) & 0x3f)];
+            output[output_index].write(alphabet[usize::from(first >> 2)]);
+            output[output_index + 1]
+                .write(alphabet[usize::from(((first << 4) | (second >> 4)) & 0x3f)]);
+            output[output_index + 2].write(alphabet[usize::from((second << 2) & 0x3f)]);
             output_index += 3;
             if PADDED {
-                output[output_index] = b'=';
+                output[output_index].write(b'=');
                 output_index += 1;
             }
         }
@@ -446,7 +455,7 @@ fn decode_chunk_4(luts: &[[i32; 256]; 4], s: &[u8; 4]) -> Option<[u8; 3]> {
 #[inline]
 fn decode_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
     mut input_index: usize,
     mut output_index: usize,
 ) -> Result<usize, DecodeError> {
@@ -463,7 +472,7 @@ fn decode_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
         let Some(decoded) = decode_chunk_16(luts, s) else {
             return Err(find_invalid_in_slice(s, input_index, &luts[3]));
         };
-        output[output_index..output_index + 12].copy_from_slice(&decoded);
+        backend::write_bytes(&mut output[output_index..], decoded);
         input_index += 16;
         output_index += 12;
     }
@@ -475,7 +484,7 @@ fn decode_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
         let Some(decoded) = decode_chunk_4(luts, s) else {
             return Err(find_invalid_in_slice(s, input_index, &luts[3]));
         };
-        output[output_index..output_index + 3].copy_from_slice(&decoded);
+        backend::write_bytes(&mut output[output_index..], decoded);
         input_index += 4;
         output_index += 3;
     }
@@ -526,7 +535,7 @@ fn decode_in_place_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
 fn decode_tail<const URL_SAFE_ALPHABET: bool>(
     trailing: &[u8],
     base_index: usize,
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> Result<usize, DecodeError> {
     let lut = if URL_SAFE_ALPHABET {
         &URL_DECODE_LUTS[3]
@@ -543,7 +552,7 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
                     index: base_index + 1,
                 });
             }
-            output[0] = (v0 << 2) | (v1 >> 4);
+            output[0].write((v0 << 2) | (v1 >> 4));
             Ok(1)
         }
         [first, second, third] => {
@@ -555,8 +564,8 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
                     index: base_index + 2,
                 });
             }
-            output[0] = (v0 << 2) | (v1 >> 4);
-            output[1] = (v1 << 4) | (v2 >> 2);
+            output[0].write((v0 << 2) | (v1 >> 4));
+            output[1].write((v1 << 4) | (v2 >> 2));
             Ok(2)
         }
         _ => unreachable!(),
@@ -587,33 +596,64 @@ fn decode_value(byte: u8, index: usize, lut3: &[i32; 256]) -> Result<u8, DecodeE
 mod tests {
     use super::*;
 
+    fn decoded_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
+        decode_plan::<PADDED>(input).map(|plan| plan.required)
+    }
+
+    fn encode_init<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
+        input: &[u8],
+        output: &mut [u8],
+    ) -> usize {
+        encode::<URL_SAFE_ALPHABET, PADDED>(input, codec::as_uninit_slice(output))
+    }
+
+    fn decode_init<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, DecodeError> {
+        let plan = decode_plan::<PADDED>(input)?;
+        decode_with_plan::<URL_SAFE_ALPHABET>(input, plan, codec::as_uninit_slice(output))
+    }
+
     fn encode_scalar<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         input: &[u8],
         output: &mut [u8],
     ) -> usize {
-        encode_scalar_from::<URL_SAFE_ALPHABET, PADDED>(input, output, 0, 0)
+        encode_scalar_from::<URL_SAFE_ALPHABET, PADDED>(input, codec::as_uninit_slice(output), 0, 0)
     }
 
     fn decode_scalar<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         input: &[u8],
         output: &mut [u8],
     ) -> Result<usize, DecodeError> {
-        if input.is_empty() {
+        let plan = decode_plan::<PADDED>(input)?;
+        if plan.data_len == 0 {
             return Ok(0);
         }
-        let complete_len = decode_complete_len::<PADDED>(input)?;
-        decode_from::<URL_SAFE_ALPHABET, PADDED>(input, output, complete_len, 0, 0, false)
+        decode_from::<URL_SAFE_ALPHABET>(
+            input,
+            codec::as_uninit_slice(&mut output[..plan.required]),
+            plan.data_len,
+            plan.complete_len,
+            0,
+            0,
+            false,
+        )
     }
 
     fn decode_in_place_scalar<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
         buf: &mut [u8],
     ) -> Result<usize, DecodeError> {
-        let (required, padding) = decoded_len_and_padding::<PADDED>(buf)?;
-        let data_len = buf.len() - padding;
-        let complete_len = (data_len / 4) * 4;
-        let written =
-            decode_in_place_from::<URL_SAFE_ALPHABET>(buf, data_len, complete_len, 0, 0, false)?;
-        debug_assert_eq!(written, required);
+        let plan = decode_plan::<PADDED>(buf)?;
+        let written = decode_in_place_from::<URL_SAFE_ALPHABET>(
+            buf,
+            plan.data_len,
+            plan.complete_len,
+            0,
+            0,
+            false,
+        )?;
+        debug_assert_eq!(written, plan.required);
         Ok(written)
     }
 
@@ -689,7 +729,7 @@ mod tests {
             let scalar_enc = &mut scalar_enc_buf[..expected_enc_len];
 
             assert_eq!(
-                encode::<URL_SAFE_ALPHABET, PADDED>(raw, enc),
+                encode_init::<URL_SAFE_ALPHABET, PADDED>(raw, enc),
                 expected_enc_len
             );
             assert_eq!(
@@ -700,7 +740,7 @@ mod tests {
 
             let dec = &mut dec_buf[..len];
             let scalar_dec = &mut scalar_dec_buf[..len];
-            assert_eq!(decode::<URL_SAFE_ALPHABET, PADDED>(enc, dec), Ok(len));
+            assert_eq!(decode_init::<URL_SAFE_ALPHABET, PADDED>(enc, dec), Ok(len));
             assert_eq!(
                 decode_scalar::<URL_SAFE_ALPHABET, PADDED>(enc, scalar_dec),
                 Ok(len)
@@ -735,7 +775,7 @@ mod tests {
                         ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = [0_u8; 96];
         let mut scalar_out = [0_u8; 96];
-        assert_eq!(decode::<false, true>(&std_sym, &mut out), Ok(96));
+        assert_eq!(decode_init::<false, true>(&std_sym, &mut out), Ok(96));
         assert_eq!(
             decode_scalar::<false, true>(&std_sym, &mut scalar_out),
             Ok(96)
@@ -743,12 +783,12 @@ mod tests {
         assert_eq!(out, scalar_out);
 
         let mut reencoded = [0_u8; 128];
-        assert_eq!(encode::<false, true>(&out, &mut reencoded), 128);
+        assert_eq!(encode_init::<false, true>(&out, &mut reencoded), 128);
         assert_eq!(reencoded, std_sym);
 
         let url_sym = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_\
                         ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        assert_eq!(decode::<true, false>(&url_sym, &mut out), Ok(96));
+        assert_eq!(decode_init::<true, false>(&url_sym, &mut out), Ok(96));
         assert_eq!(
             decode_scalar::<true, false>(&url_sym, &mut scalar_out),
             Ok(96)
@@ -771,7 +811,7 @@ mod tests {
             fill_pattern(raw, raw_len + 13);
             let enc_len = encoded_len::<PADDED>(raw_len).expect("within bounds");
             let clean_enc = &mut clean_enc_buf[..enc_len];
-            encode::<URL_SAFE_ALPHABET, PADDED>(raw, clean_enc);
+            encode_init::<URL_SAFE_ALPHABET, PADDED>(raw, clean_enc);
 
             for pos in 0..enc_len {
                 for byte in 0_u8..=u8::MAX {
@@ -781,7 +821,7 @@ mod tests {
 
                     let out_cap = max_decoded_len(enc_len);
                     let actual =
-                        decode::<URL_SAFE_ALPHABET, PADDED>(mutated, &mut dec_buf[..out_cap]);
+                        decode_init::<URL_SAFE_ALPHABET, PADDED>(mutated, &mut dec_buf[..out_cap]);
                     let expected = decode_scalar::<URL_SAFE_ALPHABET, PADDED>(
                         mutated,
                         &mut scalar_dec_buf[..out_cap],
@@ -828,7 +868,7 @@ mod tests {
             let mut buf = [b'A'; 80];
             buf[pos] = b'=';
             assert_eq!(
-                decode::<false, true>(&buf, &mut out),
+                decode_init::<false, true>(&buf, &mut out),
                 Err(DecodeError::InvalidPadding { index: pos })
             );
             assert_eq!(
@@ -840,7 +880,7 @@ mod tests {
             let mut buf = [b'A'; 80];
             buf[pos] = b'=';
             assert_eq!(
-                decode::<true, false>(&buf, &mut out),
+                decode_init::<true, false>(&buf, &mut out),
                 Err(DecodeError::InvalidPadding { index: pos })
             );
             assert_eq!(
@@ -853,7 +893,7 @@ mod tests {
         let mut cross = [b'A'; 80];
         cross[65] = b'-';
         assert_eq!(
-            decode::<false, true>(&cross, &mut out),
+            decode_init::<false, true>(&cross, &mut out),
             Err(DecodeError::InvalidByte {
                 index: 65,
                 byte: b'-'
@@ -861,7 +901,7 @@ mod tests {
         );
         cross[65] = b'+';
         assert_eq!(
-            decode::<true, true>(&cross, &mut out),
+            decode_init::<true, true>(&cross, &mut out),
             Err(DecodeError::InvalidByte {
                 index: 65,
                 byte: b'+'
@@ -874,11 +914,11 @@ mod tests {
         tail2[66] = b'=';
         tail2[67] = b'=';
         assert_eq!(
-            decode::<false, true>(&tail2, &mut out),
+            decode_init::<false, true>(&tail2, &mut out),
             Err(DecodeError::NonCanonical { index: 65 })
         );
         assert_eq!(
-            decode::<false, false>(&tail2[..66], &mut out),
+            decode_init::<false, false>(&tail2[..66], &mut out),
             Err(DecodeError::NonCanonical { index: 65 })
         );
         assert_eq!(
@@ -891,11 +931,11 @@ mod tests {
         tail3[66] = b'B';
         tail3[67] = b'=';
         assert_eq!(
-            decode::<false, true>(&tail3, &mut out),
+            decode_init::<false, true>(&tail3, &mut out),
             Err(DecodeError::NonCanonical { index: 66 })
         );
         assert_eq!(
-            decode::<false, false>(&tail3[..67], &mut out),
+            decode_init::<false, false>(&tail3[..67], &mut out),
             Err(DecodeError::NonCanonical { index: 66 })
         );
         assert_eq!(

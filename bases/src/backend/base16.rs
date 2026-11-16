@@ -14,7 +14,11 @@
 
 //! Base16 (hexadecimal) execution backend.
 
+use core::mem::MaybeUninit;
+
 use crate::DecodeError;
+use crate::backend;
+use crate::backend::DecodePlan;
 
 #[allow(unsafe_code)]
 mod arch;
@@ -84,20 +88,25 @@ pub const fn max_decoded_len(input_len: usize) -> usize {
     input_len / 2
 }
 
-/// Validates Base16 input length and returns the exact decoded length.
+/// Validates Base16 input length and returns the exact decode plan.
 #[inline]
-pub fn decoded_len(input: &[u8]) -> Result<usize, DecodeError> {
+pub fn decode_plan(input: &[u8]) -> Result<DecodePlan, DecodeError> {
     if input.len() % 2 != 0 {
         return Err(DecodeError::InvalidLength {
             length: input.len(),
         });
     }
-    Ok(input.len() / 2)
+    Ok(DecodePlan {
+        required: input.len() / 2,
+        data_len: input.len(),
+        complete_len: input.len(),
+        padding: 0,
+    })
 }
 
 /// Encodes `input` into `output` using Base16, returning the number of bytes written.
 #[inline]
-pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> usize {
+pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
     let required = encoded_len(input.len()).expect("encoded length overflow");
     assert!(output.len() >= required, "output buffer too small");
 
@@ -105,22 +114,52 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> usize {
     encode_scalar_from::<UPPERCASE>(input, output, input_index, output_index)
 }
 
-/// Decodes Base16 `input` into `output`, returning the number of bytes written.
+/// Encodes a single 1-byte Base16 quantum into `output`.
 #[inline]
-pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
+pub fn encode_quantum<const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
-) -> Result<usize, DecodeError> {
-    if input.len() % 2 != 0 {
-        return Err(DecodeError::InvalidLength {
-            length: input.len(),
-        });
-    }
-    let required = input.len() / 2;
-    assert!(output.len() >= required, "output buffer too small");
+    output: &mut [MaybeUninit<u8>],
+) -> usize {
+    debug_assert_eq!(input.len(), 1);
+    debug_assert!(output.len() >= 2);
+    let lut = if UPPERCASE {
+        &UPPER_ENCODE_LUT
+    } else {
+        &LOWER_ENCODE_LUT
+    };
+    backend::write_bytes(output, lut[usize::from(input[0])].to_le_bytes());
+    2
+}
 
-    let (input_index, output_index) = arch::decode::<UPPERCASE, STRICT_CASE>(input, output);
-    decode_scalar_from::<UPPERCASE, STRICT_CASE>(input, output, input_index, output_index)
+/// Decodes Base16 `input` into `output` using `plan`, returning the number of bytes written.
+#[inline]
+pub fn decode_with_plan<const UPPERCASE: bool, const STRICT_CASE: bool>(
+    input: &[u8],
+    plan: DecodePlan,
+    output: &mut [MaybeUninit<u8>],
+) -> Result<usize, DecodeError> {
+    debug_assert_eq!(plan.data_len, input.len());
+    debug_assert_eq!(plan.complete_len, input.len());
+    debug_assert_eq!(plan.padding, 0);
+    debug_assert_eq!(plan.required, input.len() / 2);
+    assert!(output.len() >= plan.required, "output buffer too small");
+    let out = &mut output[..plan.required];
+
+    let (input_index, output_index) = arch::decode::<UPPERCASE, STRICT_CASE>(input, out);
+    decode_scalar_from::<UPPERCASE, STRICT_CASE>(input, out, input_index, output_index)
+}
+
+/// Decodes a single 2-byte Base16 quantum into `output`.
+#[inline]
+pub fn decode_quantum<const UPPERCASE: bool, const STRICT_CASE: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> Result<usize, DecodeError> {
+    debug_assert_eq!(input.len(), 2);
+    debug_assert!(!output.is_empty());
+    let lut = select_decode_lut::<UPPERCASE, STRICT_CASE>();
+    output[0].write(decode_pair(lut, input[0], input[1], 0)?);
+    Ok(1)
 }
 
 /// Decodes Base16 `buf` in place, returning the number of decoded bytes.
@@ -128,18 +167,18 @@ pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
 pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> Result<usize, DecodeError> {
-    let required = decoded_len(buf)?;
+    let plan = decode_plan(buf)?;
     let (input_index, output_index) = arch::decode_in_place::<UPPERCASE, STRICT_CASE>(buf);
     let written =
         decode_in_place_scalar_from::<UPPERCASE, STRICT_CASE>(buf, input_index, output_index)?;
-    debug_assert_eq!(written, required);
+    debug_assert_eq!(written, plan.required);
     Ok(written)
 }
 
 #[inline]
 fn encode_scalar_from<const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
     mut input_index: usize,
     mut output_index: usize,
 ) -> usize {
@@ -156,15 +195,16 @@ fn encode_scalar_from<const UPPERCASE: bool>(
         let b3 = lut[usize::from(input[input_index + 3])];
         let word =
             u64::from(b0) | (u64::from(b1) << 16) | (u64::from(b2) << 32) | (u64::from(b3) << 48);
-        output[output_index..output_index + 8].copy_from_slice(&word.to_le_bytes());
+        backend::write_bytes(&mut output[output_index..], word.to_le_bytes());
         input_index += 4;
         output_index += 8;
     }
 
     while input_index < input.len() {
-        let pair = lut[usize::from(input[input_index])].to_le_bytes();
-        output[output_index] = pair[0];
-        output[output_index + 1] = pair[1];
+        backend::write_bytes(
+            &mut output[output_index..],
+            lut[usize::from(input[input_index])].to_le_bytes(),
+        );
         input_index += 1;
         output_index += 2;
     }
@@ -212,7 +252,7 @@ fn decode_pair(lut: &[u8; 256], b0: u8, b1: u8, index: usize) -> Result<u8, Deco
 #[inline]
 fn decode_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
     mut input_index: usize,
     mut output_index: usize,
 ) -> Result<usize, DecodeError> {
@@ -225,14 +265,18 @@ fn decode_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
         let Some(decoded) = decode_chunk_8(lut, chunk) else {
             break;
         };
-        output[output_index..output_index + 4].copy_from_slice(&decoded);
+        backend::write_bytes(&mut output[output_index..], decoded);
         input_index += 8;
         output_index += 4;
     }
 
     while input_index + 2 <= input.len() {
-        output[output_index] =
-            decode_pair(lut, input[input_index], input[input_index + 1], input_index)?;
+        output[output_index].write(decode_pair(
+            lut,
+            input[input_index],
+            input[input_index + 1],
+            input_index,
+        )?);
         input_index += 2;
         output_index += 1;
     }
@@ -272,6 +316,30 @@ fn decode_in_place_scalar_from<const UPPERCASE: bool, const STRICT_CASE: bool>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec;
+
+    fn decoded_len(input: &[u8]) -> Result<usize, DecodeError> {
+        decode_plan(input).map(|plan| plan.required)
+    }
+
+    fn encode_init<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> usize {
+        encode::<UPPERCASE>(input, codec::as_uninit_slice(output))
+    }
+
+    fn decode_init<const UPPERCASE: bool, const STRICT_CASE: bool>(
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, DecodeError> {
+        let plan = decode_plan(input)?;
+        decode_with_plan::<UPPERCASE, STRICT_CASE>(input, plan, codec::as_uninit_slice(output))
+    }
+
+    fn decode_scalar_init<const UPPERCASE: bool, const STRICT_CASE: bool>(
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, DecodeError> {
+        decode_scalar_from::<UPPERCASE, STRICT_CASE>(input, codec::as_uninit_slice(output), 0, 0)
+    }
 
     fn decode_in_place_scalar<const UPPERCASE: bool, const STRICT_CASE: bool>(
         buf: &mut [u8],
@@ -324,17 +392,17 @@ mod tests {
             // Uppercase profile
             let enc = &mut enc_buf[..len * 2];
             let scalar_enc = &mut scalar_enc_buf[..len * 2];
-            assert_eq!(encode::<true>(raw, enc), len * 2);
-            assert_eq!(encode_scalar_from::<true>(raw, scalar_enc, 0, 0), len * 2);
+            assert_eq!(encode_init::<true>(raw, enc), len * 2);
+            assert_eq!(
+                encode_scalar_from::<true>(raw, codec::as_uninit_slice(scalar_enc), 0, 0),
+                len * 2
+            );
             assert_eq!(enc, scalar_enc);
 
             let dec = &mut dec_buf[..len];
             let scalar_dec = &mut scalar_dec_buf[..len];
-            assert_eq!(decode::<true, true>(enc, dec), Ok(len));
-            assert_eq!(
-                decode_scalar_from::<true, true>(enc, scalar_dec, 0, 0),
-                Ok(len)
-            );
+            assert_eq!(decode_init::<true, true>(enc, dec), Ok(len));
+            assert_eq!(decode_scalar_init::<true, true>(enc, scalar_dec), Ok(len));
             assert_eq!(dec, raw);
             assert_eq!(dec, scalar_dec);
 
@@ -348,15 +416,15 @@ mod tests {
             assert_eq!(&sip[..len], raw);
 
             // Lowercase profile
-            assert_eq!(encode::<false>(raw, enc), len * 2);
-            assert_eq!(encode_scalar_from::<false>(raw, scalar_enc, 0, 0), len * 2);
+            assert_eq!(encode_init::<false>(raw, enc), len * 2);
+            assert_eq!(
+                encode_scalar_from::<false>(raw, codec::as_uninit_slice(scalar_enc), 0, 0),
+                len * 2
+            );
             assert_eq!(enc, scalar_enc);
 
-            assert_eq!(decode::<false, true>(enc, dec), Ok(len));
-            assert_eq!(
-                decode_scalar_from::<false, true>(enc, scalar_dec, 0, 0),
-                Ok(len)
-            );
+            assert_eq!(decode_init::<false, true>(enc, dec), Ok(len));
+            assert_eq!(decode_scalar_init::<false, true>(enc, scalar_dec), Ok(len));
             assert_eq!(dec, raw);
             assert_eq!(dec, scalar_dec);
 
@@ -373,8 +441,8 @@ mod tests {
                     *b = b.to_ascii_uppercase();
                 }
             }
-            assert_eq!(decode::<false, false>(enc, dec), Ok(len));
-            assert_eq!(decode::<true, false>(enc, dec), Ok(len));
+            assert_eq!(decode_init::<false, false>(enc, dec), Ok(len));
+            assert_eq!(decode_init::<true, false>(enc, dec), Ok(len));
             assert_eq!(dec, raw);
             ip.copy_from_slice(enc);
             assert_eq!(decode_in_place::<false, false>(ip), Ok(len));
@@ -397,7 +465,7 @@ mod tests {
             fill_pattern(raw, raw_len + 3);
             let enc_len = raw_len * 2;
             let clean_enc = &mut clean_enc_buf[..enc_len];
-            encode::<UPPERCASE>(raw, clean_enc);
+            encode_init::<UPPERCASE>(raw, clean_enc);
 
             for pos in 0..enc_len {
                 for byte in 0_u8..=u8::MAX {
@@ -405,12 +473,11 @@ mod tests {
                     mutated.copy_from_slice(clean_enc);
                     mutated[pos] = byte;
 
-                    let actual = decode::<UPPERCASE, STRICT_CASE>(mutated, &mut dec_buf[..raw_len]);
-                    let expected = decode_scalar_from::<UPPERCASE, STRICT_CASE>(
+                    let actual =
+                        decode_init::<UPPERCASE, STRICT_CASE>(mutated, &mut dec_buf[..raw_len]);
+                    let expected = decode_scalar_init::<UPPERCASE, STRICT_CASE>(
                         mutated,
                         &mut scalar_dec_buf[..raw_len],
-                        0,
-                        0,
                     );
                     assert_eq!(
                         actual, expected,
@@ -454,7 +521,7 @@ mod tests {
         let mut mixed_in_upper = [b'A'; 66];
         mixed_in_upper[0] = b'a';
         assert_eq!(
-            decode::<true, true>(&mixed_in_upper, &mut out[..33]),
+            decode_init::<true, true>(&mixed_in_upper, &mut out[..33]),
             Err(DecodeError::InvalidByte {
                 index: 0,
                 byte: b'a'
@@ -463,20 +530,20 @@ mod tests {
         mixed_in_upper[0] = b'A';
         mixed_in_upper[35] = b'f';
         assert_eq!(
-            decode::<true, true>(&mixed_in_upper, &mut out[..33]),
+            decode_init::<true, true>(&mixed_in_upper, &mut out[..33]),
             Err(DecodeError::InvalidByte {
                 index: 35,
                 byte: b'f'
             })
         );
         assert_eq!(
-            decode::<true, false>(&mixed_in_upper, &mut out[..33]),
+            decode_init::<true, false>(&mixed_in_upper, &mut out[..33]),
             Ok(33)
         );
 
         mixed_in_upper[35] = b'=';
         assert_eq!(
-            decode::<false, false>(&mixed_in_upper, &mut out[..33]),
+            decode_init::<false, false>(&mixed_in_upper, &mut out[..33]),
             Err(DecodeError::InvalidByte {
                 index: 35,
                 byte: b'='
@@ -485,7 +552,7 @@ mod tests {
 
         let mut odd = [b'a'; 3];
         assert_eq!(
-            decode::<false, false>(&odd, &mut out),
+            decode_init::<false, false>(&odd, &mut out),
             Err(DecodeError::InvalidLength { length: 3 })
         );
         assert_eq!(

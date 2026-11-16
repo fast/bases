@@ -14,8 +14,12 @@
 
 //! Base32 execution backend.
 
+use core::mem::MaybeUninit;
+
 use crate::DecodeError;
 use crate::backend;
+use crate::backend::DecodePlan;
+use crate::codec;
 
 #[allow(unsafe_code)]
 mod arch;
@@ -138,16 +142,9 @@ pub const fn max_decoded_len(input_len: usize) -> usize {
     complete + trailing
 }
 
-/// Validates Base32 input length and padding shape, returning the exact decoded length.
+/// Validates Base32 input length and padding shape, returning the exact decode plan.
 #[inline]
-pub fn decoded_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
-    decoded_len_and_padding::<PADDED>(input).map(|(len, _)| len)
-}
-
-#[inline]
-fn decoded_len_and_padding<const PADDED: bool>(
-    input: &[u8],
-) -> Result<(usize, usize), DecodeError> {
+pub fn decode_plan<const PADDED: bool>(input: &[u8]) -> Result<DecodePlan, DecodeError> {
     if PADDED {
         if input.len() % 8 != 0 {
             return Err(DecodeError::InvalidLength {
@@ -155,7 +152,12 @@ fn decoded_len_and_padding<const PADDED: bool>(
             });
         }
         if input.is_empty() {
-            return Ok((0, 0));
+            return Ok(DecodePlan {
+                required: 0,
+                data_len: 0,
+                complete_len: 0,
+                padding: 0,
+            });
         }
 
         let padding = if input[input.len() - 1] == b'=' {
@@ -175,7 +177,14 @@ fn decoded_len_and_padding<const PADDED: bool>(
                 });
             }
         };
-        Ok((input.len() / 8 * 5 - reduction, padding))
+        let data_len = input.len() - padding;
+        let complete_len = (data_len / 8) * 8;
+        Ok(DecodePlan {
+            required: input.len() / 8 * 5 - reduction,
+            data_len,
+            complete_len,
+            padding,
+        })
     } else {
         let trailing = match input.len() % 8 {
             0 => 0,
@@ -189,7 +198,13 @@ fn decoded_len_and_padding<const PADDED: bool>(
                 });
             }
         };
-        Ok((input.len() / 8 * 5 + trailing, 0))
+        let complete_len = (input.len() / 8) * 8;
+        Ok(DecodePlan {
+            required: input.len() / 8 * 5 + trailing,
+            data_len: input.len(),
+            complete_len,
+            padding: 0,
+        })
     }
 }
 
@@ -197,7 +212,7 @@ fn decoded_len_and_padding<const PADDED: bool>(
 #[inline]
 pub fn encode<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> usize {
     let required = encoded_len::<PADDED>(input.len()).expect("encoded length overflow");
     assert!(output.len() >= required, "output buffer too small");
@@ -206,70 +221,69 @@ pub fn encode<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: boo
     encode_scalar_from::<EXTENDED_HEX, PADDED, UPPERCASE>(input, output, input_index, output_index)
 }
 
+/// Encodes a single 5-byte Base32 quantum into `output`.
 #[inline]
-fn decode_complete_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
-    if PADDED {
-        if input.len() % 8 != 0 {
-            return Err(DecodeError::InvalidLength {
-                length: input.len(),
-            });
-        }
-        if input[input.len() - 1] == b'=' {
-            Ok(input.len() - 8)
-        } else {
-            Ok(input.len())
-        }
-    } else {
-        match input.len() % 8 {
-            0 | 2 | 4 | 5 | 7 => Ok((input.len() / 8) * 8),
-            _ => Err(DecodeError::InvalidLength {
-                length: input.len(),
-            }),
-        }
-    }
+pub fn encode_quantum<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+) -> usize {
+    let chunk: &[u8; 5] = input.try_into().expect("5-byte slice fits in [u8; 5]");
+    debug_assert!(output.len() >= 8);
+    let alphabet = select_alphabet::<EXTENDED_HEX, UPPERCASE>();
+    backend::write_bytes(output, encode_quantum_5(alphabet, chunk));
+    8
 }
 
-/// Decodes Base32 `input` into `output`, returning the number of bytes written.
+/// Decodes Base32 `input` into `output` using `plan`, returning the number of bytes written.
 #[inline]
-pub fn decode<
+pub fn decode_with_plan<
     const EXTENDED_HEX: bool,
-    const PADDED: bool,
     const UPPERCASE: bool,
     const STRICT_CASE: bool,
 >(
     input: &[u8],
-    output: &mut [u8],
+    plan: DecodePlan,
+    output: &mut [MaybeUninit<u8>],
 ) -> Result<usize, DecodeError> {
-    if input.is_empty() {
+    if plan.data_len == 0 {
         return Ok(0);
     }
-
-    let complete_len = decode_complete_len::<PADDED>(input)?;
-    assert!(
-        output.len() >= (complete_len / 8) * 5,
-        "output buffer too small"
-    );
+    assert!(output.len() >= plan.required, "output buffer too small");
+    let out = &mut output[..plan.required];
 
     let (input_index, output_index) =
-        arch::decode::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(&input[..complete_len], output);
-    decode_from::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(
+        arch::decode::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(&input[..plan.complete_len], out);
+    decode_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
         input,
-        output,
-        complete_len,
+        out,
+        plan.data_len,
+        plan.complete_len,
         input_index,
         output_index,
     )
 }
 
+/// Decodes a single complete 8-byte Base32 quantum into `output`.
 #[inline]
-fn decode_from<
-    const EXTENDED_HEX: bool,
-    const PADDED: bool,
-    const UPPERCASE: bool,
-    const STRICT_CASE: bool,
->(
+pub fn decode_quantum<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
+) -> Result<usize, DecodeError> {
+    let lut = select_decode_lut::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>();
+    let chunk: &[u8; 8] = input.try_into().expect("8-byte slice fits in [u8; 8]");
+    debug_assert!(output.len() >= 5);
+    let Some(decoded) = decode_chunk_8(lut, chunk) else {
+        return Err(find_invalid_in_quantum(chunk, 0, lut));
+    };
+    backend::write_bytes(output, decoded);
+    Ok(5)
+}
+
+#[inline]
+fn decode_from<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
+    input: &[u8],
+    output: &mut [MaybeUninit<u8>],
+    data_len: usize,
     complete_len: usize,
     input_index: usize,
     output_index: usize,
@@ -281,27 +295,9 @@ fn decode_from<
         output_index,
     )?;
 
-    if PADDED {
-        if complete_len != input.len() {
-            let last = &input[complete_len..];
-            let mut padding = 1;
-            while padding < 8 && last[7 - padding] == b'=' {
-                padding += 1;
-            }
-            if !matches!(padding, 1 | 3 | 4 | 6) {
-                return Err(DecodeError::InvalidPadding {
-                    index: input.len() - padding,
-                });
-            }
-            output_index += decode_tail::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
-                &last[..8 - padding],
-                complete_len,
-                &mut output[output_index..],
-            )?;
-        }
-    } else if complete_len != input.len() {
+    if complete_len != data_len {
         output_index += decode_tail::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
-            &input[complete_len..],
+            &input[complete_len..data_len],
             complete_len,
             &mut output[output_index..],
         )?;
@@ -320,21 +316,19 @@ pub fn decode_in_place<
 >(
     buf: &mut [u8],
 ) -> Result<usize, DecodeError> {
-    let (required, padding) = decoded_len_and_padding::<PADDED>(buf)?;
-    let data_len = buf.len() - padding;
-    let complete_len = (data_len / 8) * 8;
+    let plan = decode_plan::<PADDED>(buf)?;
 
     let (input_index, output_index) =
-        arch::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, complete_len);
+        arch::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, plan.complete_len);
     let written = decode_in_place_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
         buf,
-        data_len,
-        complete_len,
+        plan.data_len,
+        plan.complete_len,
         input_index,
         output_index,
     )?;
 
-    debug_assert_eq!(written, required);
+    debug_assert_eq!(written, plan.required);
     Ok(written)
 }
 
@@ -363,35 +357,41 @@ fn decode_in_place_from<
         output_index += decode_tail::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
             &tail[..tail_len],
             complete_len,
-            &mut buf[output_index..],
+            codec::as_uninit_slice(&mut buf[output_index..]),
         )?;
     }
 
     Ok(output_index)
 }
 
+#[inline]
+fn encode_quantum_5(alphabet: &[u8; 32], b: &[u8; 5]) -> [u8; 8] {
+    let w = u64::from_be_bytes([0, 0, 0, b[0], b[1], b[2], b[3], b[4]]);
+    [
+        alphabet[((w >> 35) & 0x1f) as usize],
+        alphabet[((w >> 30) & 0x1f) as usize],
+        alphabet[((w >> 25) & 0x1f) as usize],
+        alphabet[((w >> 20) & 0x1f) as usize],
+        alphabet[((w >> 15) & 0x1f) as usize],
+        alphabet[((w >> 10) & 0x1f) as usize],
+        alphabet[((w >> 5) & 0x1f) as usize],
+        alphabet[(w & 0x1f) as usize],
+    ]
+}
+
 fn encode_scalar_from<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
     mut input_index: usize,
     mut output_index: usize,
 ) -> usize {
     let alphabet = select_alphabet::<EXTENDED_HEX, UPPERCASE>();
 
     while input_index + 5 <= input.len() {
-        let b = &input[input_index..input_index + 5];
-        let w = u64::from_be_bytes([0, 0, 0, b[0], b[1], b[2], b[3], b[4]]);
-        let encoded = [
-            alphabet[((w >> 35) & 0x1f) as usize],
-            alphabet[((w >> 30) & 0x1f) as usize],
-            alphabet[((w >> 25) & 0x1f) as usize],
-            alphabet[((w >> 20) & 0x1f) as usize],
-            alphabet[((w >> 15) & 0x1f) as usize],
-            alphabet[((w >> 10) & 0x1f) as usize],
-            alphabet[((w >> 5) & 0x1f) as usize],
-            alphabet[(w & 0x1f) as usize],
-        ];
-        output[output_index..output_index + 8].copy_from_slice(&encoded);
+        let b: &[u8; 5] = input[input_index..input_index + 5]
+            .try_into()
+            .expect("5-byte slice fits in [u8; 5]");
+        backend::write_bytes(&mut output[output_index..], encode_quantum_5(alphabet, b));
         input_index += 5;
         output_index += 8;
     }
@@ -401,40 +401,46 @@ fn encode_scalar_from<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERC
         let rem = &input[input_index..];
         let (written_syms, pad_len) = match rem {
             [b0] => {
-                output[output_index] = alphabet[usize::from(b0 >> 3)];
-                output[output_index + 1] = alphabet[usize::from((b0 << 2) & 0x1f)];
+                output[output_index].write(alphabet[usize::from(b0 >> 3)]);
+                output[output_index + 1].write(alphabet[usize::from((b0 << 2) & 0x1f)]);
                 (2, 6)
             }
             [b0, b1] => {
-                output[output_index] = alphabet[usize::from(b0 >> 3)];
-                output[output_index + 1] = alphabet[usize::from(((b0 << 2) | (b1 >> 6)) & 0x1f)];
-                output[output_index + 2] = alphabet[usize::from((b1 >> 1) & 0x1f)];
-                output[output_index + 3] = alphabet[usize::from((b1 << 4) & 0x1f)];
+                output[output_index].write(alphabet[usize::from(b0 >> 3)]);
+                output[output_index + 1]
+                    .write(alphabet[usize::from(((b0 << 2) | (b1 >> 6)) & 0x1f)]);
+                output[output_index + 2].write(alphabet[usize::from((b1 >> 1) & 0x1f)]);
+                output[output_index + 3].write(alphabet[usize::from((b1 << 4) & 0x1f)]);
                 (4, 4)
             }
             [b0, b1, b2] => {
-                output[output_index] = alphabet[usize::from(b0 >> 3)];
-                output[output_index + 1] = alphabet[usize::from(((b0 << 2) | (b1 >> 6)) & 0x1f)];
-                output[output_index + 2] = alphabet[usize::from((b1 >> 1) & 0x1f)];
-                output[output_index + 3] = alphabet[usize::from(((b1 << 4) | (b2 >> 4)) & 0x1f)];
-                output[output_index + 4] = alphabet[usize::from((b2 << 1) & 0x1f)];
+                output[output_index].write(alphabet[usize::from(b0 >> 3)]);
+                output[output_index + 1]
+                    .write(alphabet[usize::from(((b0 << 2) | (b1 >> 6)) & 0x1f)]);
+                output[output_index + 2].write(alphabet[usize::from((b1 >> 1) & 0x1f)]);
+                output[output_index + 3]
+                    .write(alphabet[usize::from(((b1 << 4) | (b2 >> 4)) & 0x1f)]);
+                output[output_index + 4].write(alphabet[usize::from((b2 << 1) & 0x1f)]);
                 (5, 3)
             }
             [b0, b1, b2, b3] => {
-                output[output_index] = alphabet[usize::from(b0 >> 3)];
-                output[output_index + 1] = alphabet[usize::from(((b0 << 2) | (b1 >> 6)) & 0x1f)];
-                output[output_index + 2] = alphabet[usize::from((b1 >> 1) & 0x1f)];
-                output[output_index + 3] = alphabet[usize::from(((b1 << 4) | (b2 >> 4)) & 0x1f)];
-                output[output_index + 4] = alphabet[usize::from(((b2 << 1) | (b3 >> 7)) & 0x1f)];
-                output[output_index + 5] = alphabet[usize::from((b3 >> 2) & 0x1f)];
-                output[output_index + 6] = alphabet[usize::from((b3 << 3) & 0x1f)];
+                output[output_index].write(alphabet[usize::from(b0 >> 3)]);
+                output[output_index + 1]
+                    .write(alphabet[usize::from(((b0 << 2) | (b1 >> 6)) & 0x1f)]);
+                output[output_index + 2].write(alphabet[usize::from((b1 >> 1) & 0x1f)]);
+                output[output_index + 3]
+                    .write(alphabet[usize::from(((b1 << 4) | (b2 >> 4)) & 0x1f)]);
+                output[output_index + 4]
+                    .write(alphabet[usize::from(((b2 << 1) | (b3 >> 7)) & 0x1f)]);
+                output[output_index + 5].write(alphabet[usize::from((b3 >> 2) & 0x1f)]);
+                output[output_index + 6].write(alphabet[usize::from((b3 << 3) & 0x1f)]);
                 (7, 1)
             }
             _ => unreachable!(),
         };
         output_index += written_syms;
         if PADDED {
-            output[output_index..output_index + pad_len].fill(b'=');
+            output[output_index..output_index + pad_len].fill(MaybeUninit::new(b'='));
             output_index += pad_len;
         }
     }
@@ -473,7 +479,7 @@ fn decode_scalar_complete_from<
     const STRICT_CASE: bool,
 >(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
     mut input_index: usize,
     mut output_index: usize,
 ) -> Result<usize, DecodeError> {
@@ -486,7 +492,7 @@ fn decode_scalar_complete_from<
         let Some(decoded) = decode_chunk_8(lut, s) else {
             return Err(find_invalid_in_quantum(s, input_index, lut));
         };
-        output[output_index..output_index + 5].copy_from_slice(&decoded);
+        backend::write_bytes(&mut output[output_index..], decoded);
         input_index += 8;
         output_index += 5;
     }
@@ -524,7 +530,7 @@ fn decode_in_place_scalar_complete_from<
 fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     trailing: &[u8],
     base_index: usize,
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> Result<usize, DecodeError> {
     let lut = select_decode_lut::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>();
     match trailing {
@@ -536,7 +542,7 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
                     index: base_index + 1,
                 });
             }
-            output[0] = (v0 << 3) | (v1 >> 2);
+            output[0].write((v0 << 3) | (v1 >> 2));
             Ok(1)
         }
         [b0, b1, b2, b3] => {
@@ -549,8 +555,8 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
                     index: base_index + 3,
                 });
             }
-            output[0] = (v0 << 3) | (v1 >> 2);
-            output[1] = (v1 << 6) | (v2 << 1) | (v3 >> 4);
+            output[0].write((v0 << 3) | (v1 >> 2));
+            output[1].write((v1 << 6) | (v2 << 1) | (v3 >> 4));
             Ok(2)
         }
         [b0, b1, b2, b3, b4] => {
@@ -564,9 +570,9 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
                     index: base_index + 4,
                 });
             }
-            output[0] = (v0 << 3) | (v1 >> 2);
-            output[1] = (v1 << 6) | (v2 << 1) | (v3 >> 4);
-            output[2] = (v3 << 4) | (v4 >> 1);
+            output[0].write((v0 << 3) | (v1 >> 2));
+            output[1].write((v1 << 6) | (v2 << 1) | (v3 >> 4));
+            output[2].write((v3 << 4) | (v4 >> 1));
             Ok(3)
         }
         [b0, b1, b2, b3, b4, b5, b6] => {
@@ -582,10 +588,10 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
                     index: base_index + 6,
                 });
             }
-            output[0] = (v0 << 3) | (v1 >> 2);
-            output[1] = (v1 << 6) | (v2 << 1) | (v3 >> 4);
-            output[2] = (v3 << 4) | (v4 >> 1);
-            output[3] = (v4 << 7) | (v5 << 2) | (v6 >> 3);
+            output[0].write((v0 << 3) | (v1 >> 2));
+            output[1].write((v1 << 6) | (v2 << 1) | (v3 >> 4));
+            output[2].write((v3 << 4) | (v4 >> 1));
+            output[3].write((v4 << 7) | (v5 << 2) | (v6 >> 3));
             Ok(4)
         }
         _ => unreachable!(),
@@ -615,11 +621,44 @@ fn decode_value(byte: u8, index: usize, lut: &[u8; 256]) -> Result<u8, DecodeErr
 mod tests {
     use super::*;
 
+    fn decoded_len<const PADDED: bool>(input: &[u8]) -> Result<usize, DecodeError> {
+        decode_plan::<PADDED>(input).map(|plan| plan.required)
+    }
+
+    fn encode_init<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: bool>(
+        input: &[u8],
+        output: &mut [u8],
+    ) -> usize {
+        encode::<EXTENDED_HEX, PADDED, UPPERCASE>(input, codec::as_uninit_slice(output))
+    }
+
+    fn decode_init<
+        const EXTENDED_HEX: bool,
+        const PADDED: bool,
+        const UPPERCASE: bool,
+        const STRICT_CASE: bool,
+    >(
+        input: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, DecodeError> {
+        let plan = decode_plan::<PADDED>(input)?;
+        decode_with_plan::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+            input,
+            plan,
+            codec::as_uninit_slice(output),
+        )
+    }
+
     fn encode_scalar<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: bool>(
         input: &[u8],
         output: &mut [u8],
     ) -> usize {
-        encode_scalar_from::<EXTENDED_HEX, PADDED, UPPERCASE>(input, output, 0, 0)
+        encode_scalar_from::<EXTENDED_HEX, PADDED, UPPERCASE>(
+            input,
+            codec::as_uninit_slice(output),
+            0,
+            0,
+        )
     }
 
     fn decode_scalar<
@@ -631,14 +670,15 @@ mod tests {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<usize, DecodeError> {
-        if input.is_empty() {
+        let plan = decode_plan::<PADDED>(input)?;
+        if plan.data_len == 0 {
             return Ok(0);
         }
-        let complete_len = decode_complete_len::<PADDED>(input)?;
-        decode_from::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(
+        decode_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
             input,
-            output,
-            complete_len,
+            codec::as_uninit_slice(&mut output[..plan.required]),
+            plan.data_len,
+            plan.complete_len,
             0,
             0,
         )
@@ -652,17 +692,15 @@ mod tests {
     >(
         buf: &mut [u8],
     ) -> Result<usize, DecodeError> {
-        let (required, padding) = decoded_len_and_padding::<PADDED>(buf)?;
-        let data_len = buf.len() - padding;
-        let complete_len = (data_len / 8) * 8;
+        let plan = decode_plan::<PADDED>(buf)?;
         let written = decode_in_place_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
             buf,
-            data_len,
-            complete_len,
+            plan.data_len,
+            plan.complete_len,
             0,
             0,
         )?;
-        debug_assert_eq!(written, required);
+        debug_assert_eq!(written, plan.required);
         Ok(written)
     }
 
@@ -753,7 +791,7 @@ mod tests {
             let scalar_enc = &mut scalar_enc_buf[..expected_enc_len];
 
             assert_eq!(
-                encode::<EXTENDED_HEX, PADDED, UPPERCASE>(raw, enc),
+                encode_init::<EXTENDED_HEX, PADDED, UPPERCASE>(raw, enc),
                 expected_enc_len
             );
             assert_eq!(
@@ -765,7 +803,7 @@ mod tests {
             let dec = &mut dec_buf[..len];
             let scalar_dec = &mut scalar_dec_buf[..len];
             assert_eq!(
-                decode::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(enc, dec),
+                decode_init::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(enc, dec),
                 Ok(len)
             );
             assert_eq!(
@@ -801,7 +839,7 @@ mod tests {
                     }
                 }
                 assert_eq!(
-                    decode::<EXTENDED_HEX, PADDED, UPPERCASE, false>(enc, dec),
+                    decode_init::<EXTENDED_HEX, PADDED, UPPERCASE, false>(enc, dec),
                     Ok(len)
                 );
                 assert_eq!(dec, raw);
@@ -856,7 +894,7 @@ mod tests {
             fill_pattern(raw, raw_len + 11);
             let enc_len = encoded_len::<PADDED>(raw_len).expect("within bounds");
             let clean_enc = &mut clean_enc_buf[..enc_len];
-            encode::<EXTENDED_HEX, PADDED, UPPERCASE>(raw, clean_enc);
+            encode_init::<EXTENDED_HEX, PADDED, UPPERCASE>(raw, clean_enc);
 
             for pos in 0..enc_len {
                 for byte in 0_u8..=u8::MAX {
@@ -865,7 +903,7 @@ mod tests {
                     mutated[pos] = byte;
 
                     let out_cap = max_decoded_len(enc_len);
-                    let actual = decode::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(
+                    let actual = decode_init::<EXTENDED_HEX, PADDED, UPPERCASE, STRICT_CASE>(
                         mutated,
                         &mut dec_buf[..out_cap],
                     );
@@ -923,7 +961,7 @@ mod tests {
             let mut buf = [b'A'; 48];
             buf[pos] = b'=';
             assert_eq!(
-                decode::<false, true, true, true>(&buf, &mut out),
+                decode_init::<false, true, true, true>(&buf, &mut out),
                 Err(DecodeError::InvalidPadding { index: pos })
             );
             assert_eq!(
@@ -935,7 +973,7 @@ mod tests {
             let mut buf = [b'a'; 48];
             buf[pos] = b'=';
             assert_eq!(
-                decode::<false, false, false, true>(&buf, &mut out),
+                decode_init::<false, false, false, true>(&buf, &mut out),
                 Err(DecodeError::InvalidPadding { index: pos })
             );
             assert_eq!(
@@ -948,11 +986,11 @@ mod tests {
         // 2-char tail: low 2 bits of byte[1] must be 0 ('A'=0, 'B'=1)
         let mut tail2 = *b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB======";
         assert_eq!(
-            decode::<false, true, true, true>(&tail2, &mut out),
+            decode_init::<false, true, true, true>(&tail2, &mut out),
             Err(DecodeError::NonCanonical { index: 33 })
         );
         assert_eq!(
-            decode::<false, false, true, true>(&tail2[..34], &mut out),
+            decode_init::<false, false, true, true>(&tail2[..34], &mut out),
             Err(DecodeError::NonCanonical { index: 33 })
         );
         assert_eq!(
@@ -963,7 +1001,7 @@ mod tests {
         // 4-char tail: low 4 bits of byte[3] must be 0
         let mut tail4 = *b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB====";
         assert_eq!(
-            decode::<false, true, true, true>(&tail4, &mut out),
+            decode_init::<false, true, true, true>(&tail4, &mut out),
             Err(DecodeError::NonCanonical { index: 35 })
         );
         assert_eq!(
@@ -974,7 +1012,7 @@ mod tests {
         // 5-char tail: low 1 bit of byte[4] must be 0
         let mut tail5 = *b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB===";
         assert_eq!(
-            decode::<false, true, true, true>(&tail5, &mut out),
+            decode_init::<false, true, true, true>(&tail5, &mut out),
             Err(DecodeError::NonCanonical { index: 36 })
         );
         assert_eq!(
@@ -985,7 +1023,7 @@ mod tests {
         // 7-char tail: low 3 bits of byte[6] must be 0
         let mut tail7 = *b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB=";
         assert_eq!(
-            decode::<false, true, true, true>(&tail7, &mut out),
+            decode_init::<false, true, true, true>(&tail7, &mut out),
             Err(DecodeError::NonCanonical { index: 38 })
         );
         assert_eq!(
@@ -997,28 +1035,28 @@ mod tests {
         let mut upper_with_lower = [b'B'; 40];
         upper_with_lower[23] = b'b';
         assert_eq!(
-            decode::<false, true, true, true>(&upper_with_lower, &mut out),
+            decode_init::<false, true, true, true>(&upper_with_lower, &mut out),
             Err(DecodeError::InvalidByte {
                 index: 23,
                 byte: b'b'
             })
         );
         assert_eq!(
-            decode::<false, true, true, false>(&upper_with_lower, &mut out),
+            decode_init::<false, true, true, false>(&upper_with_lower, &mut out),
             Ok(25)
         );
 
         let mut lower_hex_with_upper = [b'v'; 40];
         lower_hex_with_upper[17] = b'V';
         assert_eq!(
-            decode::<true, true, false, true>(&lower_hex_with_upper, &mut out),
+            decode_init::<true, true, false, true>(&lower_hex_with_upper, &mut out),
             Err(DecodeError::InvalidByte {
                 index: 17,
                 byte: b'V'
             })
         );
         assert_eq!(
-            decode::<true, true, false, false>(&lower_hex_with_upper, &mut out),
+            decode_init::<true, true, false, false>(&lower_hex_with_upper, &mut out),
             Ok(25)
         );
     }

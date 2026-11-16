@@ -52,6 +52,7 @@ use core::arch::aarch64::vshrq_n_u32;
 use core::arch::aarch64::vshrq_n_u64;
 use core::arch::aarch64::vst1_u8;
 use core::arch::aarch64::vst1q_u8;
+use core::mem::MaybeUninit;
 use core::ptr;
 
 const STANDARD_UPPER: [u8; 32] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -101,7 +102,7 @@ const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'s
 #[inline]
 pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     if input.len() < 16 {
         return (0, 0);
@@ -111,10 +112,15 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
         return (0, 0);
     }
 
-    // SAFETY: `chunks > 0` implies `input.len() >= (chunks - 1) * 10 + 16` and
-    // `output.len() >= chunks * 16`. NEON is baseline on aarch64.
+    // SAFETY: `chunks > 0` implies `input.len() >= (chunks - 1) * 10 + 16`,
+    // `output.len() >= chunks * 16`, `MaybeUninit<u8>` has the same layout as `u8`, and NEON is
+    // baseline on aarch64.
     unsafe {
-        encode_neon::<EXTENDED_HEX, UPPERCASE>(input.as_ptr(), output.as_mut_ptr(), chunks);
+        encode_neon::<EXTENDED_HEX, UPPERCASE>(
+            input.as_ptr(),
+            output.as_mut_ptr().cast::<u8>(),
+            chunks,
+        );
     }
     (chunks * 10, chunks * 16)
 }
@@ -122,18 +128,19 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
 #[inline]
 pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
-    output: &mut [u8],
+    output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
     let chunks = (input.len() / 16).min(output.len() / 10);
     if chunks == 0 {
         return (0, 0);
     }
 
-    // SAFETY: `chunks * 16 <= input.len()` and `chunks * 10 <= output.len()`, and NEON is baseline.
+    // SAFETY: `chunks * 16 <= input.len()`, `chunks * 10 <= output.len()`, `MaybeUninit<u8>` has
+    // the same layout as `u8`, and NEON is baseline.
     let done = unsafe {
         decode_neon::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
             input.as_ptr(),
-            output.as_mut_ptr(),
+            output.as_mut_ptr().cast::<u8>(),
             chunks,
         )
     };

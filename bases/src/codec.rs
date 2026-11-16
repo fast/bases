@@ -15,11 +15,10 @@
 #[cfg(feature = "alloc")]
 use alloc::string::String;
 #[cfg(feature = "alloc")]
-use alloc::vec;
-#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
-#[cfg(feature = "alloc")]
-use core::mem;
+use core::mem::MaybeUninit;
+use core::ptr;
+use core::slice;
 use core::str;
 #[cfg(feature = "std")]
 use std::io;
@@ -283,6 +282,17 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
 
 impl<T> Codec for T where T: sealed::Profile + 'static {}
 
+/// Views an initialized byte slice as write-only `MaybeUninit<u8>` slots.
+#[allow(unsafe_code)]
+#[inline]
+pub(crate) fn as_uninit_slice(bytes: &mut [u8]) -> &mut [MaybeUninit<u8>] {
+    let len = bytes.len();
+    // SAFETY: `MaybeUninit<u8>` has the same layout and alignment as `u8`, `bytes` is uniquely
+    // borrowed for the returned lifetime, and backends only write initialized `u8` values so
+    // `bytes` remains initialized even on error.
+    unsafe { slice::from_raw_parts_mut(bytes.as_mut_ptr().cast::<MaybeUninit<u8>>(), len) }
+}
+
 /// Converts an ASCII byte slice to `&mut str` without re-validating UTF-8.
 ///
 /// # Safety
@@ -294,6 +304,23 @@ pub(crate) unsafe fn ascii_to_str_mut(bytes: &mut [u8]) -> &mut str {
     debug_assert!(bytes.is_ascii());
     // SAFETY: Caller guarantees all bytes are ASCII and therefore valid UTF-8.
     unsafe { str::from_utf8_unchecked_mut(bytes) }
+}
+
+/// Converts an initialized ASCII `MaybeUninit<u8>` slice to `&str` without re-validating UTF-8.
+///
+/// # Safety
+///
+/// Every byte in `bytes` must be initialized and valid ASCII (`<= 0x7f`), hence valid UTF-8.
+#[allow(unsafe_code)]
+#[inline]
+pub(crate) unsafe fn uninit_ascii_to_str(bytes: &[MaybeUninit<u8>]) -> &str {
+    let len = bytes.len();
+    // SAFETY: Caller guarantees all `len` elements are initialized ASCII bytes, and
+    // `MaybeUninit<u8>` has the same layout and alignment as `u8`.
+    let init = unsafe { slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), len) };
+    debug_assert!(init.is_ascii());
+    // SAFETY: Caller guarantees all bytes are ASCII and therefore valid UTF-8.
+    unsafe { str::from_utf8_unchecked(init) }
 }
 
 /// Converts an ASCII byte vector to `String` without re-validating UTF-8.
@@ -311,34 +338,23 @@ unsafe fn ascii_vec_to_string(bytes: Vec<u8>) -> String {
 }
 
 #[cfg(feature = "alloc")]
-struct TruncateGuard<'a> {
-    vec: &'a mut Vec<u8>,
-    len: usize,
-}
-
-#[cfg(feature = "alloc")]
-impl Drop for TruncateGuard<'_> {
-    fn drop(&mut self) {
-        self.vec.truncate(self.len);
-    }
-}
-
-#[cfg(feature = "alloc")]
 #[allow(unsafe_code)]
 #[inline]
 fn append_encoded_ascii<C: Codec>(input: &[u8], buf: &mut String, start: usize, required: usize) {
     let new_len = start
         .checked_add(required)
         .expect("the encoded length fits in usize");
-    // SAFETY: `TruncateGuard` restores the valid UTF-8 length `start` if allocation or encoding
-    // unwinds, and `C::Profile::encode_impl` writes `required` ASCII bytes into `start..new_len`.
+    // SAFETY: `buf.as_mut_vec()` borrows the backing UTF-8 buffer; we reserve `required` bytes
+    // and only advance the length to `new_len` after `encode_impl` initializes `start..new_len`
+    // with ASCII bytes, leaving the existing `..start` prefix untouched on unwind.
     let vec = unsafe { buf.as_mut_vec() };
-    let guard = TruncateGuard { vec, len: start };
-    guard.vec.resize(new_len, 0);
-    let written = C::Profile::encode_impl(input, &mut guard.vec[start..new_len]);
+    vec.reserve(required);
+    let written = C::Profile::encode_impl(input, &mut vec.spare_capacity_mut()[..required]);
     debug_assert_eq!(written, required);
-    debug_assert!(guard.vec[start..new_len].is_ascii());
-    mem::forget(guard);
+    // SAFETY: `encode_impl` wrote `required` initialized ASCII bytes into `start..new_len`,
+    // preserving valid UTF-8 for `buf`.
+    unsafe { vec.set_len(new_len) };
+    debug_assert!(vec[start..new_len].is_ascii());
 }
 
 #[allow(unsafe_code)]
@@ -355,10 +371,11 @@ pub(crate) fn encode_into<'output, C: Codec>(
         });
     }
 
-    let written = C::Profile::encode_impl(input, output);
+    let written = C::Profile::encode_impl(input, as_uninit_slice(output));
     debug_assert_eq!(written, required);
 
-    // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..written]`.
+    // SAFETY: Binary-to-text backends always write `written` initialized ASCII bytes into
+    // `output[..written]`.
     Ok(unsafe { ascii_to_str_mut(&mut output[..written]) })
 }
 
@@ -367,17 +384,18 @@ pub(crate) fn decode_into<'output, C: Codec>(
     input: &[u8],
     output: &'output mut [u8],
 ) -> Result<&'output mut [u8], DecodeSliceError> {
-    let required = C::Profile::decoded_len_impl(input)?;
-    if output.len() < required {
+    let plan = C::Profile::decode_plan_impl(input)?;
+    if output.len() < plan.required {
         return Err(DecodeSliceError::OutputTooSmall {
-            required,
+            required: plan.required,
             available: output.len(),
         });
     }
 
-    let written = C::Profile::decode_impl(input, output)?;
-    debug_assert_eq!(written, required);
-    Ok(&mut output[..written])
+    let out = &mut output[..plan.required];
+    let written = C::Profile::decode_with_plan_impl(input, plan, as_uninit_slice(out))?;
+    debug_assert_eq!(written, plan.required);
+    Ok(out)
 }
 
 #[inline]
@@ -386,19 +404,22 @@ pub(crate) fn decode_in_place<C: Codec>(buf: &mut [u8]) -> Result<&mut [u8], Dec
     Ok(&mut buf[..written])
 }
 
+#[allow(unsafe_code)]
 #[inline]
 pub(crate) fn decode_array<C: Codec, const N: usize>(input: &[u8]) -> Result<[u8; N], DecodeError> {
-    let required = C::Profile::decoded_len_impl(input)?;
-    if required != N {
+    let plan = C::Profile::decode_plan_impl(input)?;
+    if plan.required != N {
         return Err(DecodeError::InvalidLength {
             length: input.len(),
         });
     }
 
-    let mut output = [0_u8; N];
-    let written = C::Profile::decode_impl(input, &mut output)?;
+    let mut output = [MaybeUninit::<u8>::uninit(); N];
+    let written = C::Profile::decode_with_plan_impl(input, plan, &mut output)?;
     debug_assert_eq!(written, N);
-    Ok(output)
+    // SAFETY: `decode_with_plan_impl` succeeded and initialized all `N` elements of `output`, and
+    // `[MaybeUninit<u8>; N]` has the same layout and alignment as `[u8; N]`.
+    Ok(unsafe { ptr::read(output.as_ptr().cast::<[u8; N]>()) })
 }
 
 #[cfg(feature = "alloc")]
@@ -407,11 +428,15 @@ pub(crate) fn decode_array<C: Codec, const N: usize>(input: &[u8]) -> Result<[u8
 pub(crate) fn encode<C: Codec>(input: &[u8]) -> String {
     let required =
         C::encoded_len(input.len()).expect("the encoded length of an existing slice fits in usize");
-    let mut output = vec![0_u8; required];
-    let written = C::Profile::encode_impl(input, &mut output);
+    let mut output = Vec::with_capacity(required);
+    let written = C::Profile::encode_impl(input, &mut output.spare_capacity_mut()[..required]);
     debug_assert_eq!(written, required);
-    // SAFETY: Binary-to-text backends always write ASCII bytes into `output`.
-    unsafe { ascii_vec_to_string(output) }
+    // SAFETY: `encode_impl` wrote `written == required` initialized ASCII bytes into
+    // `output.spare_capacity_mut()[..required]`, and `output.capacity() >= required`.
+    unsafe {
+        output.set_len(required);
+        ascii_vec_to_string(output)
+    }
 }
 
 #[cfg(feature = "alloc")]
@@ -428,42 +453,54 @@ pub(crate) fn encode_append<'buf, C: Codec>(input: &[u8], buf: &'buf mut String)
 }
 
 #[cfg(feature = "alloc")]
+#[allow(unsafe_code)]
 #[inline]
 pub(crate) fn decode<C: Codec>(input: &[u8]) -> Result<Vec<u8>, DecodeError> {
-    let required = C::Profile::decoded_len_impl(input)?;
-    let mut output = vec![0_u8; required];
-    let written = C::Profile::decode_impl(input, &mut output)?;
-    debug_assert_eq!(written, required);
+    let plan = C::Profile::decode_plan_impl(input)?;
+    let mut output = Vec::with_capacity(plan.required);
+    let written = C::Profile::decode_with_plan_impl(
+        input,
+        plan,
+        &mut output.spare_capacity_mut()[..plan.required],
+    )?;
+    debug_assert_eq!(written, plan.required);
+    // SAFETY: `decode_with_plan_impl` succeeded and initialized all `plan.required` bytes in
+    // `output.spare_capacity_mut()[..plan.required]`.
+    unsafe { output.set_len(plan.required) };
     Ok(output)
 }
 
 #[cfg(feature = "alloc")]
+#[allow(unsafe_code)]
 #[inline]
 pub(crate) fn decode_append<C: Codec>(
     input: &[u8],
     buf: &mut Vec<u8>,
 ) -> Result<usize, DecodeError> {
-    let required = C::Profile::decoded_len_impl(input)?;
+    let plan = C::Profile::decode_plan_impl(input)?;
     let original_len = buf.len();
     let new_len = original_len
-        .checked_add(required)
+        .checked_add(plan.required)
         .expect("decoded vector length overflow");
-    buf.resize(new_len, 0);
+    buf.reserve(plan.required);
 
-    match C::Profile::decode_impl(input, &mut buf[original_len..]) {
-        Ok(written) => {
-            debug_assert_eq!(written, required);
-            Ok(written)
-        }
-        Err(error) => {
-            buf.truncate(original_len);
-            Err(error)
-        }
-    }
+    let written = C::Profile::decode_with_plan_impl(
+        input,
+        plan,
+        &mut buf.spare_capacity_mut()[..plan.required],
+    )?;
+    debug_assert_eq!(written, plan.required);
+    // SAFETY: `decode_with_plan_impl` succeeded and initialized all `plan.required` bytes in
+    // `buf.spare_capacity_mut()[..plan.required]`.
+    unsafe { buf.set_len(new_len) };
+    Ok(written)
 }
 
 pub(crate) mod sealed {
+    use core::mem::MaybeUninit;
+
     use crate::DecodeError;
+    use crate::backend::DecodePlan;
 
     /// A direct `Codec: Profile` bound would let downstream generic code skip
     /// padding and output-capacity checks:
@@ -471,7 +508,7 @@ pub(crate) mod sealed {
     /// ```compile_fail,E0599
     /// use bases::Codec;
     /// fn unchecked<C: Codec>(input: &[u8], output: &mut [u8]) {
-    ///     let _ = C::decode_impl(input, output);
+    ///     let _ = C::decode_with_plan_impl(input, output);
     /// }
     /// ```
     pub trait Sealed {
@@ -492,9 +529,18 @@ pub(crate) mod sealed {
 
         fn encoded_len_impl(input_len: usize) -> Option<usize>;
         fn max_decoded_len_impl(input_len: usize) -> usize;
-        fn decoded_len_impl(input: &[u8]) -> Result<usize, DecodeError>;
-        fn encode_impl(input: &[u8], output: &mut [u8]) -> usize;
-        fn decode_impl(input: &[u8], output: &mut [u8]) -> Result<usize, DecodeError>;
+        fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError>;
+        fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize;
+        fn encode_quantum_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize;
+        fn decode_with_plan_impl(
+            input: &[u8],
+            plan: DecodePlan,
+            output: &mut [MaybeUninit<u8>],
+        ) -> Result<usize, DecodeError>;
+        fn decode_quantum_impl(
+            input: &[u8],
+            output: &mut [MaybeUninit<u8>],
+        ) -> Result<usize, DecodeError>;
         fn decode_in_place_impl(buf: &mut [u8]) -> Result<usize, DecodeError>;
         fn decoded_padding_reduction(padding: usize) -> Option<usize>;
     }

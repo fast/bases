@@ -26,9 +26,6 @@ use crate::Encoder;
 use crate::codec::sealed::Profile;
 
 const BUF_LEN: usize = 1024;
-// Encoder retains at most 4 bytes, so 4 + 508 = 512 bytes expands to at most
-// 1024 encoded bytes in Base16.
-const MAX_WRITE_INPUT_CHUNK: usize = 508;
 const MAX_DECODED_QUANTUM: usize = 5;
 
 /// A [`Write`] adapter that encodes written bytes with profile `C`.
@@ -198,7 +195,9 @@ impl<C: Codec, W: Write> Write for EncoderWriter<C, W> {
         self.flush_encoded()?;
 
         let saved_encoder = self.encoder.clone();
-        let chunk_len = buf.len().min(MAX_WRITE_INPUT_CHUNK);
+        let max_quanta = BUF_LEN / C::Profile::ENCODED_QUANTUM;
+        let max_input = max_quanta * C::Profile::INPUT_QUANTUM - self.encoder.pending_len();
+        let chunk_len = buf.len().min(max_input);
         let encoded_len = self
             .encoder
             .update(&buf[..chunk_len], &mut self.output)
