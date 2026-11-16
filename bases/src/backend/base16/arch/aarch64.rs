@@ -40,8 +40,8 @@ use core::arch::aarch64::vzip1q_u8;
 use core::arch::aarch64::vzip2q_u8;
 use core::mem::MaybeUninit;
 
-use crate::backend::base16::LOWER_HEX;
-use crate::backend::base16::UPPER_HEX;
+const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
+const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 
 const HI_MASK_MIXED: [u8; 16] = [0, 0, 0, 1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 const HI_MASK_UPPER: [u8; 16] = [0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];

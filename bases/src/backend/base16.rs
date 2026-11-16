@@ -23,26 +23,9 @@ use crate::backend::DecodePlan;
 #[allow(unsafe_code)]
 mod arch;
 
-const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
-const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-const UPPER_ENCODE_LUT: [u16; 256] = make_encode_lut(UPPER_HEX);
-const LOWER_ENCODE_LUT: [u16; 256] = make_encode_lut(LOWER_HEX);
-
 const MIXED_DECODE_LUT: [u8; 256] = make_decode_lut(true, true);
 const UPPER_DECODE_LUT: [u8; 256] = make_decode_lut(true, false);
 const LOWER_DECODE_LUT: [u8; 256] = make_decode_lut(false, true);
-
-const fn make_encode_lut(alphabet: &[u8; 16]) -> [u16; 256] {
-    let mut lut = [0_u16; 256];
-    let mut byte = 0;
-    while byte < 256 {
-        let hi = alphabet[byte >> 4];
-        let lo = alphabet[byte & 0x0f];
-        lut[byte] = u16::from_le_bytes([hi, lo]);
-        byte += 1;
-    }
-    lut
-}
 
 const fn make_decode_lut(allow_upper: bool, allow_lower: bool) -> [u8; 256] {
     let mut lut = [0xff_u8; 256];
@@ -124,12 +107,8 @@ pub fn encode_quantum<const UPPERCASE: bool>(
 ) -> usize {
     debug_assert_eq!(input.len(), 1);
     debug_assert!(output.len() >= 2);
-    let lut = if UPPERCASE {
-        &UPPER_ENCODE_LUT
-    } else {
-        &LOWER_ENCODE_LUT
-    };
-    backend::write_bytes(output, lut[usize::from(input[0])].to_le_bytes());
+    output[0].write(encode_nibble::<UPPERCASE>(input[0] >> 4));
+    output[1].write(encode_nibble::<UPPERCASE>(input[0] & 0x0f));
     2
 }
 
@@ -181,37 +160,27 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
 fn encode_scalar_from<const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
-    mut input_index: usize,
-    mut output_index: usize,
+    input_index: usize,
+    output_index: usize,
 ) -> usize {
-    let lut = if UPPERCASE {
-        &UPPER_ENCODE_LUT
+    for (&byte, pair) in input[input_index..]
+        .iter()
+        .zip(output[output_index..].as_chunks_mut::<2>().0)
+    {
+        pair[0].write(encode_nibble::<UPPERCASE>(byte >> 4));
+        pair[1].write(encode_nibble::<UPPERCASE>(byte & 0x0f));
+    }
+    output_index + (input.len() - input_index) * 2
+}
+
+#[inline]
+fn encode_nibble<const UPPERCASE: bool>(nibble: u8) -> u8 {
+    let letter_offset = if UPPERCASE {
+        b'A' - b'0' - 10
     } else {
-        &LOWER_ENCODE_LUT
+        b'a' - b'0' - 10
     };
-
-    while input_index + 4 <= input.len() {
-        let b0 = lut[usize::from(input[input_index])];
-        let b1 = lut[usize::from(input[input_index + 1])];
-        let b2 = lut[usize::from(input[input_index + 2])];
-        let b3 = lut[usize::from(input[input_index + 3])];
-        let word =
-            u64::from(b0) | (u64::from(b1) << 16) | (u64::from(b2) << 32) | (u64::from(b3) << 48);
-        backend::write_bytes(&mut output[output_index..], word.to_le_bytes());
-        input_index += 4;
-        output_index += 8;
-    }
-
-    while input_index < input.len() {
-        backend::write_bytes(
-            &mut output[output_index..],
-            lut[usize::from(input[input_index])].to_le_bytes(),
-        );
-        input_index += 1;
-        output_index += 2;
-    }
-
-    output_index
+    b'0' + nibble + u8::from(nibble >= 10) * letter_offset
 }
 
 #[inline]
