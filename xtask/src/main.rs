@@ -90,6 +90,8 @@ enum SubCommand {
 struct CommandBench {
     #[arg(long, help = "Compile benchmarks without running them.")]
     no_run: bool,
+    #[arg(long, requires = "no_run", help = "Emit Cargo JSON build metadata.")]
+    json: bool,
     #[arg(
         last = true,
         conflicts_with = "no_run",
@@ -104,6 +106,9 @@ impl CommandBench {
         cmd.args(["bench", "--package", "benchmarks", "--bench", "throughput"]);
         if self.no_run {
             cmd.arg("--no-run");
+        }
+        if self.json {
+            cmd.arg("--message-format=json-render-diagnostics");
         }
         if !self.args.is_empty() {
             cmd.arg("--").args(self.args);

@@ -49,13 +49,12 @@ build() {
     (
         cd "$tree"
         export CARGO_TARGET_DIR="$scratch/target-$revision"
-        cargo x bench --no-run
+        binary=$(cargo x bench --no-run --json | jq -Rr '
+            fromjson? | select(.reason == "compiler-artifact" and .target.name == "throughput") |
+            .executable // empty
+        ')
         git diff --exit-code -- Cargo.lock
-        for binary in "$CARGO_TARGET_DIR"/release/deps/throughput-*; do
-            if [[ -f "$binary" && -x "$binary" ]]; then
-                cp "$binary" "$scratch/$revision"
-            fi
-        done
+        cp "$binary" "$scratch/$revision"
     )
     test -x "$scratch/$revision"
     taskset -c "$cpu" "$scratch/$revision" --test
