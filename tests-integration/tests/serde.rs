@@ -51,7 +51,10 @@ fn serde_roundtrips_vec_and_fixed_arrays() {
     };
 
     let json = serde_json::to_string(&record).unwrap();
-    insta::assert_snapshot!(json, @r#"{"payload":"Zm9v//8=","cursor":"-_8","tag":"MY======","digest":"deadbeef","mac":"ABCD"}"#);
+    assert_eq!(
+        json,
+        r#"{"payload":"Zm9v//8=","cursor":"-_8","tag":"MY======","digest":"deadbeef","mac":"ABCD"}"#
+    );
 
     let decoded: Record = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded, record);
