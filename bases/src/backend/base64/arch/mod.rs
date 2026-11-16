@@ -96,6 +96,7 @@ pub fn decode<const URL_SAFE_ALPHABET: bool>(
 pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
+    required: usize,
 ) -> (usize, usize, bool) {
     if cfg!(miri) {
         return (0, 0, false);
@@ -103,7 +104,7 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     {
-        return aarch64::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len);
+        return aarch64::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len, required);
     }
 
     #[cfg(all(
@@ -111,16 +112,16 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
         any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
     ))]
     {
-        return x86::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len);
+        return x86::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len, required);
     }
 
     #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
     {
-        return wasm32::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len);
+        return wasm32::decode_in_place::<URL_SAFE_ALPHABET>(buf, complete_len, required);
     }
 
     #[allow(unreachable_code)]
-    let _ = (buf, complete_len);
+    let _ = (buf, complete_len, required);
     #[allow(unreachable_code)]
     (0, 0, false)
 }

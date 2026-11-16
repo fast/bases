@@ -84,6 +84,7 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
 pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
     complete_len: usize,
+    required: usize,
 ) -> (usize, usize) {
     if cfg!(miri) {
         return (0, 0);
@@ -91,7 +92,11 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
 
     #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
     {
-        return aarch64::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, complete_len);
+        return aarch64::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+            buf,
+            complete_len,
+            required,
+        );
     }
 
     #[cfg(all(
@@ -99,11 +104,15 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
         any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
     ))]
     {
-        return x86::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, complete_len);
+        return x86::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+            buf,
+            complete_len,
+            required,
+        );
     }
 
     #[allow(unreachable_code)]
-    let _ = (buf, complete_len);
+    let _ = (buf, complete_len, required);
     #[allow(unreachable_code)]
     (0, 0)
 }

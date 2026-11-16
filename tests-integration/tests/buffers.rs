@@ -26,6 +26,7 @@ use bases::Base64Url;
 use bases::Base64UrlUnpadded;
 use bases::Codec;
 use bases::DecodeError;
+use bases::DecodeSliceError;
 use bases::base16;
 use bases::base32;
 use bases::policy;
@@ -351,4 +352,46 @@ fn encode_append_and_transactional_decode_append() {
     let written = Base64::decode_append("aGVsbG8=", &mut bytes).unwrap();
     assert_eq!(written, 5);
     assert_eq!(bytes, b"\x01\x02\xfe\xffhello");
+}
+
+#[test]
+fn decode_into_and_reject_preserve_exact_output_bounds_and_error_offsets() {
+    fn check<C: Codec>(raw: &[u8]) {
+        let encoded = C::encode(raw);
+        let mut exact = vec![0_u8; raw.len()];
+        assert_eq!(C::decode_into(&encoded, &mut exact).unwrap(), raw);
+        assert_eq!(exact, raw);
+
+        let mut sentinel = vec![0xa5_u8; raw.len() + 32];
+        assert_eq!(C::decode_into(&encoded, &mut sentinel).unwrap(), raw);
+        assert_eq!(&sentinel[..raw.len()], raw);
+        assert!(sentinel[raw.len()..].iter().all(|&b| b == 0xa5));
+    }
+
+    for raw_len in [10, 12, 15, 16, 20, 24, 25, 27, 28, 30, 40, 48, 60, 64] {
+        let raw: Vec<u8> = (0..raw_len).map(|i| (i * 29 + 3) as u8).collect();
+        check::<Base64>(&raw);
+        check::<Base64UrlUnpadded>(&raw);
+        check::<Base32>(&raw);
+        check::<Base32Unpadded>(&raw);
+    }
+
+    // Specific worst-case offset inside 64B Base64 SIMD block (byte 63).
+    let raw_64: Vec<u8> = (0..64).map(|i| (i * 11 + 7) as u8).collect();
+    let mut bad = Base64::encode(&raw_64).into_bytes();
+    bad[63] = b'!';
+    let expected = DecodeError::InvalidByte {
+        index: 63,
+        byte: b'!',
+    };
+    assert_eq!(Base64::decode(&bad), Err(expected));
+    let mut dst = vec![0x5a_u8; 64];
+    assert_eq!(
+        Base64::decode_into(&bad, &mut dst),
+        Err(DecodeSliceError::Decode(expected))
+    );
+    let mut app = vec![0x01, 0x02];
+    assert_eq!(Base64::decode_append(&bad, &mut app), Err(expected));
+    assert_eq!(app, vec![0x01, 0x02]);
+    assert_eq!(Base64::decode_in_place(&mut bad), Err(expected));
 }

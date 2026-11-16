@@ -175,13 +175,16 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
 
     let in_ptr = input.as_ptr();
     let out_ptr = output.as_mut_ptr().cast::<u8>();
+    let out_len = output.len();
     let done_16 = {
         #[cfg(target_feature = "avx2")]
         {
             // SAFETY: `target_feature = "avx2"` is enabled at compile time and `chunks_16` is
             // bounded by `input` and `output`.
             unsafe {
-                decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_16)
+                decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+                    in_ptr, out_ptr, chunks_16, out_len,
+                )
             }
         }
 
@@ -191,16 +194,20 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
                 // SAFETY: Runtime feature detection confirmed AVX2 support and `chunks_16` is
                 // bounded by `input` and `output`.
                 unsafe {
-                    decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_16)
+                    decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+                        in_ptr, out_ptr, chunks_16, out_len,
+                    )
                 }
             } else if is_x86_feature_detected!("ssse3") {
                 // SAFETY: Runtime feature detection confirmed SSSE3 support and `chunks_16` is
                 // bounded by `input` and `output`.
                 unsafe {
-                    decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_16)
+                    decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+                        in_ptr, out_ptr, chunks_16, out_len,
+                    )
                 }
             } else {
-                let _ = (in_ptr, out_ptr);
+                let _ = (in_ptr, out_ptr, out_len);
                 0
             }
         }
@@ -214,7 +221,9 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
             // SAFETY: `target_feature = "ssse3"` is enabled at compile time and `chunks_16` is
             // bounded by `input` and `output`.
             unsafe {
-                decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, out_ptr, chunks_16)
+                decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+                    in_ptr, out_ptr, chunks_16, out_len,
+                )
             }
         }
     };
@@ -226,12 +235,14 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
 pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
     complete_len: usize,
+    required: usize,
 ) -> (usize, usize) {
     let chunks_16 = complete_len.min(buf.len()) / 16;
     if chunks_16 == 0 {
         return (0, 0);
     }
 
+    let out_len = required.min(buf.len());
     let ptr = buf.as_mut_ptr();
     let in_ptr = ptr.cast_const();
     let done_16 = {
@@ -239,7 +250,9 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
         {
             // SAFETY: `target_feature = "avx2"` is enabled at compile time, `chunks_16 * 16 <=
             // buf.len()`, and each step loads its full input before writing fewer output bytes.
-            unsafe { decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_16) }
+            unsafe {
+                decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_16, out_len)
+            }
         }
 
         #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
@@ -248,16 +261,20 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
                 // SAFETY: Runtime feature detection confirmed AVX2 support, `chunks_16 * 16 <=
                 // buf.len()`, and each step loads its full input before writing fewer output bytes.
                 unsafe {
-                    decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_16)
+                    decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+                        in_ptr, ptr, chunks_16, out_len,
+                    )
                 }
             } else if is_x86_feature_detected!("ssse3") {
                 // SAFETY: Runtime feature detection confirmed SSSE3 support, `chunks_16 * 16 <=
                 // buf.len()`, and each step loads its full input before writing fewer output bytes.
                 unsafe {
-                    decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_16)
+                    decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+                        in_ptr, ptr, chunks_16, out_len,
+                    )
                 }
             } else {
-                let _ = (in_ptr, ptr);
+                let _ = (in_ptr, ptr, out_len);
                 0
             }
         }
@@ -270,7 +287,11 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
         {
             // SAFETY: `target_feature = "ssse3"` is enabled at compile time, `chunks_16 * 16 <=
             // buf.len()`, and each step loads its full input before writing fewer output bytes.
-            unsafe { decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(in_ptr, ptr, chunks_16) }
+            unsafe {
+                decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+                    in_ptr, ptr, chunks_16, out_len,
+                )
+            }
         }
     };
 
@@ -567,9 +588,9 @@ unsafe fn store_10_ssse3(out_ptr: *mut u8, res: __m128i) {
 /// # Safety
 ///
 /// Caller must ensure `in_ptr` is valid for `chunks * 16` reads, `out_ptr` is valid for
-/// `chunks * 10` writes, and SSSE3 is enabled. `out_ptr` must either not overlap `in_ptr` or equal
-/// `in_ptr` (each iteration loads 16 input bytes before writing 10 output bytes, so `out_ptr` never
-/// overtakes unread input).
+/// `out_len >= chunks * 10` writes, and SSSE3 is enabled. `out_ptr` must either not overlap
+/// `in_ptr` or equal `in_ptr` (each iteration loads 16 input bytes before writing, wide 16-byte
+/// stores require `10 * k + 16 <= out_len`, and `out_ptr` never overtakes unread input).
 #[cfg(not(target_feature = "avx2"))]
 #[inline]
 #[target_feature(enable = "ssse3")]
@@ -577,10 +598,12 @@ unsafe fn decode_ssse3<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
     mut in_ptr: *const u8,
     mut out_ptr: *mut u8,
     chunks: usize,
+    out_len: usize,
 ) -> usize {
+    let wide_chunks = (out_len.saturating_sub(6) / 10).min(chunks);
     let mut done = 0;
-    // SAFETY: Caller guarantees `chunks * 16` reads at `in_ptr`, `chunks * 10` writes at `out_ptr`,
-    // and non-overtaking pointer advancement for in-place decoding.
+    // SAFETY: Caller guarantees `chunks * 16` reads at `in_ptr`, `out_len >= chunks * 10` writes at
+    // `out_ptr`, and non-overtaking pointer advancement for in-place decoding.
     unsafe {
         let (hi_mask, lo_mask, roll_tbl, pack_shuf) =
             decode_128_tables::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>();
@@ -588,6 +611,26 @@ unsafe fn decode_ssse3<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
         let mul_0120 = _mm_set1_epi16(0x0120);
         let mul_0001_0400 = _mm_set1_epi32(0x0001_0400);
         let zero = _mm_setzero_si128();
+
+        while done < wide_chunks {
+            let Some(res) = decode_chunk_16(
+                in_ptr,
+                hi_mask,
+                lo_mask,
+                roll_tbl,
+                pack_shuf,
+                mask_0f,
+                mul_0120,
+                mul_0001_0400,
+                zero,
+            ) else {
+                return done;
+            };
+            _mm_storeu_si128(out_ptr.cast(), res);
+            in_ptr = in_ptr.add(16);
+            out_ptr = out_ptr.add(10);
+            done += 1;
+        }
 
         while done < chunks {
             let Some(res) = decode_chunk_16(
@@ -676,9 +719,9 @@ unsafe fn store_20_avx2(out_ptr: *mut u8, res: __m256i) {
 /// # Safety
 ///
 /// Caller must ensure `in_ptr` is valid for `chunks_16 * 16` reads, `out_ptr` is valid for
-/// `chunks_16 * 10` writes, and AVX2 is enabled. `out_ptr` must either not overlap `in_ptr` or
-/// equal `in_ptr` (each iteration loads 32 or 16 input bytes before writing 20 or 10 output bytes,
-/// so `out_ptr` never overtakes unread input).
+/// `out_len >= chunks_16 * 10` writes, and AVX2 is enabled. `out_ptr` must either not overlap
+/// `in_ptr` or equal `in_ptr` (each step loads 32 or 16 input bytes before writing, wide stores
+/// stay within `out_len`, and `out_ptr` never overtakes unread input).
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 #[inline]
 #[target_feature(enable = "avx2")]
@@ -686,12 +729,14 @@ unsafe fn decode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
     mut in_ptr: *const u8,
     mut out_ptr: *mut u8,
     chunks_16: usize,
+    out_len: usize,
 ) -> usize {
     let chunks_32 = chunks_16 / 2;
+    let wide_32 = (out_len.saturating_sub(6) / 20).min(chunks_32);
     let mut done_16 = 0;
 
-    // SAFETY: Caller guarantees `chunks_16 * 16` reads at `in_ptr`, `chunks_16 * 10` writes at
-    // `out_ptr`, and non-overtaking pointer advancement for in-place decoding.
+    // SAFETY: Caller guarantees `chunks_16 * 16` reads at `in_ptr`, `out_len >= chunks_16 * 10`
+    // writes at `out_ptr`, and non-overtaking pointer advancement for in-place decoding.
     unsafe {
         let (hi_128, lo_128, roll_128, shuf_128) =
             decode_128_tables::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>();
@@ -705,7 +750,7 @@ unsafe fn decode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
             let mul_0001_0400 = _mm256_set1_epi32(0x0001_0400);
             let zero = _mm256_setzero_si256();
 
-            for _ in 0..chunks_32 {
+            for idx_32 in 0..chunks_32 {
                 let Some(res) = decode_chunk_32(
                     in_ptr,
                     hi_mask,
@@ -719,7 +764,12 @@ unsafe fn decode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
                 ) else {
                     return done_16;
                 };
-                store_20_avx2(out_ptr, res);
+                if idx_32 < wide_32 {
+                    _mm_storeu_si128(out_ptr.cast(), _mm256_castsi256_si128(res));
+                    _mm_storeu_si128(out_ptr.add(10).cast(), _mm256_extracti128_si256::<1>(res));
+                } else {
+                    store_20_avx2(out_ptr, res);
+                }
                 in_ptr = in_ptr.add(32);
                 out_ptr = out_ptr.add(20);
                 done_16 += 2;
@@ -742,7 +792,11 @@ unsafe fn decode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
                 mul_0001_0400,
                 zero,
             ) {
-                store_10_ssse3(out_ptr, res);
+                if done_16 * 10 + 16 <= out_len {
+                    _mm_storeu_si128(out_ptr.cast(), res);
+                } else {
+                    store_10_ssse3(out_ptr, res);
+                }
                 done_16 += 1;
             }
         }

@@ -27,8 +27,11 @@ mod arch;
 const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
+const INVALID_SYMBOL: u8 = 0xff;
 const STD_DECODE_LUTS: [[i32; 256]; 4] = make_decode_luts(false);
 const URL_DECODE_LUTS: [[i32; 256]; 4] = make_decode_luts(true);
+const STD_DECODE_BYTE_LUT: [u8; 256] = make_decode_byte_lut(false);
+const URL_DECODE_BYTE_LUT: [u8; 256] = make_decode_byte_lut(true);
 
 const fn make_decode_luts(url_safe: bool) -> [[i32; 256]; 4] {
     let mut luts = [[-1_i32; 256]; 4];
@@ -44,6 +47,17 @@ const fn make_decode_luts(url_safe: bool) -> [[i32; 256]; 4] {
         idx += 1;
     }
     luts
+}
+
+const fn make_decode_byte_lut(url_safe: bool) -> [u8; 256] {
+    let mut lut = [INVALID_SYMBOL; 256];
+    let alphabet = if url_safe { URL_SAFE } else { STANDARD };
+    let mut idx = 0;
+    while idx < 64 {
+        lut[alphabet[idx] as usize] = idx as u8;
+        idx += 1;
+    }
+    lut
 }
 
 /// Computes the exact Base64 encoded length for `input_len`.
@@ -198,15 +212,15 @@ pub fn decode_quantum<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
 ) -> Result<usize, DecodeError> {
-    let luts = if URL_SAFE_ALPHABET {
-        &URL_DECODE_LUTS
+    let lut = if URL_SAFE_ALPHABET {
+        &URL_DECODE_BYTE_LUT
     } else {
-        &STD_DECODE_LUTS
+        &STD_DECODE_BYTE_LUT
     };
     let s: &[u8; 4] = input.try_into().expect("4-byte slice fits in [u8; 4]");
     debug_assert!(output.len() >= 3);
-    let Some(decoded) = decode_chunk_4(luts, s) else {
-        return Err(find_invalid_in_slice(s, 0, &luts[3]));
+    let Some(decoded) = decode_chunk_4_byte(lut, s) else {
+        return Err(find_invalid_in_slice(s, 0, lut));
     };
     backend::write_bytes(output, decoded);
     Ok(3)
@@ -224,9 +238,9 @@ fn decode_from<const URL_SAFE_ALPHABET: bool>(
 ) -> Result<usize, DecodeError> {
     if had_invalid {
         let lut = if URL_SAFE_ALPHABET {
-            &URL_DECODE_LUTS[3]
+            &URL_DECODE_BYTE_LUT
         } else {
-            &STD_DECODE_LUTS[3]
+            &STD_DECODE_BYTE_LUT
         };
         return Err(find_invalid_in_slice(
             &input[input_index..complete_len],
@@ -261,7 +275,7 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     let plan = decode_plan::<PADDED>(buf)?;
 
     let (input_index, output_index, had_invalid) =
-        arch::decode_in_place::<URL_SAFE_ALPHABET>(buf, plan.complete_len);
+        arch::decode_in_place::<URL_SAFE_ALPHABET>(buf, plan.complete_len, plan.required);
     let written = decode_in_place_from::<URL_SAFE_ALPHABET>(
         buf,
         plan.data_len,
@@ -286,9 +300,9 @@ fn decode_in_place_from<const URL_SAFE_ALPHABET: bool>(
 ) -> Result<usize, DecodeError> {
     if had_invalid {
         let lut = if URL_SAFE_ALPHABET {
-            &URL_DECODE_LUTS[3]
+            &URL_DECODE_BYTE_LUT
         } else {
-            &STD_DECODE_LUTS[3]
+            &STD_DECODE_BYTE_LUT
         };
         return Err(find_invalid_in_slice(
             &buf[input_index..complete_len],
@@ -443,13 +457,42 @@ fn decode_chunk_16(luts: &[[i32; 256]; 4], s: &[u8; 16]) -> Option<[u8; 12]> {
 }
 
 #[inline]
-fn decode_chunk_4(luts: &[[i32; 256]; 4], s: &[u8; 4]) -> Option<[u8; 3]> {
-    let w = decode_4_lut(luts, s[0], s[1], s[2], s[3]);
-    if w < 0 {
+fn decode_chunk_8_byte(lut: &[u8; 256], s: &[u8; 8]) -> Option<[u8; 6]> {
+    let v0 = lut[usize::from(s[0])];
+    let v1 = lut[usize::from(s[1])];
+    let v2 = lut[usize::from(s[2])];
+    let v3 = lut[usize::from(s[3])];
+    let v4 = lut[usize::from(s[4])];
+    let v5 = lut[usize::from(s[5])];
+    let v6 = lut[usize::from(s[6])];
+    let v7 = lut[usize::from(s[7])];
+    if (v0 | v1 | v2 | v3 | v4 | v5 | v6 | v7) & 0x80 != 0 {
         return None;
     }
-    let bytes = w.to_le_bytes();
-    Some([bytes[0], bytes[1], bytes[2]])
+    let w = (u64::from(v0) << 42)
+        | (u64::from(v1) << 36)
+        | (u64::from(v2) << 30)
+        | (u64::from(v3) << 24)
+        | (u64::from(v4) << 18)
+        | (u64::from(v5) << 12)
+        | (u64::from(v6) << 6)
+        | u64::from(v7);
+    let b = w.to_be_bytes();
+    Some([b[2], b[3], b[4], b[5], b[6], b[7]])
+}
+
+#[inline]
+fn decode_chunk_4_byte(lut: &[u8; 256], s: &[u8; 4]) -> Option<[u8; 3]> {
+    let v0 = lut[usize::from(s[0])];
+    let v1 = lut[usize::from(s[1])];
+    let v2 = lut[usize::from(s[2])];
+    let v3 = lut[usize::from(s[3])];
+    if (v0 | v1 | v2 | v3) & 0x80 != 0 {
+        return None;
+    }
+    let w = (u32::from(v0) << 18) | (u32::from(v1) << 12) | (u32::from(v2) << 6) | u32::from(v3);
+    let b = w.to_be_bytes();
+    Some([b[1], b[2], b[3]])
 }
 
 #[inline]
@@ -459,33 +502,51 @@ fn decode_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
     mut input_index: usize,
     mut output_index: usize,
 ) -> Result<usize, DecodeError> {
-    let luts = if URL_SAFE_ALPHABET {
-        &URL_DECODE_LUTS
+    let byte_lut = if URL_SAFE_ALPHABET {
+        &URL_DECODE_BYTE_LUT
     } else {
-        &STD_DECODE_LUTS
+        &STD_DECODE_BYTE_LUT
     };
 
-    while input_index + 16 <= input.len() {
-        let s: &[u8; 16] = input[input_index..input_index + 16]
-            .try_into()
-            .expect("16-byte slice fits in [u8; 16]");
-        let Some(decoded) = decode_chunk_16(luts, s) else {
-            return Err(find_invalid_in_slice(s, input_index, &luts[3]));
+    if input_index + 16 <= input.len() {
+        let luts = if URL_SAFE_ALPHABET {
+            &URL_DECODE_LUTS
+        } else {
+            &STD_DECODE_LUTS
         };
-        backend::write_bytes(&mut output[output_index..], decoded);
-        input_index += 16;
-        output_index += 12;
+        while input_index + 16 <= input.len() {
+            let s: &[u8; 16] = input[input_index..input_index + 16]
+                .try_into()
+                .expect("16-byte slice fits in [u8; 16]");
+            let Some(decoded) = decode_chunk_16(luts, s) else {
+                return Err(find_invalid_in_slice(s, input_index, byte_lut));
+            };
+            backend::write_bytes(&mut output[output_index..], decoded);
+            input_index += 16;
+            output_index += 12;
+        }
     }
 
-    while input_index + 4 <= input.len() {
+    if input_index + 8 <= input.len() {
+        let s: &[u8; 8] = input[input_index..input_index + 8]
+            .try_into()
+            .expect("8-byte slice fits in [u8; 8]");
+        let Some(decoded) = decode_chunk_8_byte(byte_lut, s) else {
+            return Err(find_invalid_in_slice(s, input_index, byte_lut));
+        };
+        backend::write_bytes(&mut output[output_index..], decoded);
+        input_index += 8;
+        output_index += 6;
+    }
+
+    if input_index + 4 <= input.len() {
         let s: &[u8; 4] = input[input_index..input_index + 4]
             .try_into()
             .expect("4-byte slice fits in [u8; 4]");
-        let Some(decoded) = decode_chunk_4(luts, s) else {
-            return Err(find_invalid_in_slice(s, input_index, &luts[3]));
+        let Some(decoded) = decode_chunk_4_byte(byte_lut, s) else {
+            return Err(find_invalid_in_slice(s, input_index, byte_lut));
         };
         backend::write_bytes(&mut output[output_index..], decoded);
-        input_index += 4;
         output_index += 3;
     }
 
@@ -499,33 +560,51 @@ fn decode_in_place_scalar_complete_from<const URL_SAFE_ALPHABET: bool>(
     mut input_index: usize,
     mut output_index: usize,
 ) -> Result<usize, DecodeError> {
-    let luts = if URL_SAFE_ALPHABET {
-        &URL_DECODE_LUTS
+    let byte_lut = if URL_SAFE_ALPHABET {
+        &URL_DECODE_BYTE_LUT
     } else {
-        &STD_DECODE_LUTS
+        &STD_DECODE_BYTE_LUT
     };
 
-    while input_index + 16 <= complete_len {
-        let s: [u8; 16] = buf[input_index..input_index + 16]
-            .try_into()
-            .expect("16-byte slice fits in [u8; 16]");
-        let Some(decoded) = decode_chunk_16(luts, &s) else {
-            return Err(find_invalid_in_slice(&s, input_index, &luts[3]));
+    if input_index + 16 <= complete_len {
+        let luts = if URL_SAFE_ALPHABET {
+            &URL_DECODE_LUTS
+        } else {
+            &STD_DECODE_LUTS
         };
-        buf[output_index..output_index + 12].copy_from_slice(&decoded);
-        input_index += 16;
-        output_index += 12;
+        while input_index + 16 <= complete_len {
+            let s: [u8; 16] = buf[input_index..input_index + 16]
+                .try_into()
+                .expect("16-byte slice fits in [u8; 16]");
+            let Some(decoded) = decode_chunk_16(luts, &s) else {
+                return Err(find_invalid_in_slice(&s, input_index, byte_lut));
+            };
+            buf[output_index..output_index + 12].copy_from_slice(&decoded);
+            input_index += 16;
+            output_index += 12;
+        }
     }
 
-    while input_index + 4 <= complete_len {
+    if input_index + 8 <= complete_len {
+        let s: [u8; 8] = buf[input_index..input_index + 8]
+            .try_into()
+            .expect("8-byte slice fits in [u8; 8]");
+        let Some(decoded) = decode_chunk_8_byte(byte_lut, &s) else {
+            return Err(find_invalid_in_slice(&s, input_index, byte_lut));
+        };
+        buf[output_index..output_index + 6].copy_from_slice(&decoded);
+        input_index += 8;
+        output_index += 6;
+    }
+
+    if input_index + 4 <= complete_len {
         let s: [u8; 4] = buf[input_index..input_index + 4]
             .try_into()
             .expect("4-byte slice fits in [u8; 4]");
-        let Some(decoded) = decode_chunk_4(luts, &s) else {
-            return Err(find_invalid_in_slice(&s, input_index, &luts[3]));
+        let Some(decoded) = decode_chunk_4_byte(byte_lut, &s) else {
+            return Err(find_invalid_in_slice(&s, input_index, byte_lut));
         };
         buf[output_index..output_index + 3].copy_from_slice(&decoded);
-        input_index += 4;
         output_index += 3;
     }
 
@@ -538,9 +617,9 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
     output: &mut [MaybeUninit<u8>],
 ) -> Result<usize, DecodeError> {
     let lut = if URL_SAFE_ALPHABET {
-        &URL_DECODE_LUTS[3]
+        &URL_DECODE_BYTE_LUT
     } else {
-        &STD_DECODE_LUTS[3]
+        &STD_DECODE_BYTE_LUT
     };
 
     match trailing {
@@ -573,9 +652,9 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
 }
 
 #[inline]
-fn find_invalid_in_slice(slice: &[u8], base_index: usize, lut3: &[i32; 256]) -> DecodeError {
+fn find_invalid_in_slice(slice: &[u8], base_index: usize, lut: &[u8; 256]) -> DecodeError {
     for (offset, &byte) in slice.iter().enumerate() {
-        if lut3[usize::from(byte)] < 0 {
+        if lut[usize::from(byte)] == INVALID_SYMBOL {
             return backend::invalid_byte_error(byte, base_index + offset);
         }
     }
@@ -583,10 +662,10 @@ fn find_invalid_in_slice(slice: &[u8], base_index: usize, lut3: &[i32; 256]) -> 
 }
 
 #[inline]
-fn decode_value(byte: u8, index: usize, lut3: &[i32; 256]) -> Result<u8, DecodeError> {
-    let val = lut3[usize::from(byte)];
-    if val >= 0 {
-        Ok((val >> 16) as u8)
+fn decode_value(byte: u8, index: usize, lut: &[u8; 256]) -> Result<u8, DecodeError> {
+    let val = lut[usize::from(byte)];
+    if val != INVALID_SYMBOL {
+        Ok(val)
     } else {
         Err(backend::invalid_byte_error(byte, index))
     }
@@ -942,5 +1021,79 @@ mod tests {
             decode_in_place::<false, true>(&mut tail3),
             Err(DecodeError::NonCanonical { index: 66 })
         );
+    }
+
+    #[test]
+    fn bounded_wide_store_and_chunk_error_offsets() {
+        fn check_bounds<const URL_SAFE_ALPHABET: bool, const PADDED: bool>() {
+            let mut raw_buf = [0_u8; 96];
+            let mut enc_buf = [0_u8; 136];
+            let mut sentinel = [0_u8; 160];
+
+            for raw_len in 0..=96 {
+                let raw = &mut raw_buf[..raw_len];
+                fill_pattern(raw, raw_len + 53);
+                let enc_len = encoded_len::<PADDED>(raw_len).expect("within bounds");
+                let enc = &mut enc_buf[..enc_len];
+                encode_init::<URL_SAFE_ALPHABET, PADDED>(raw, enc);
+
+                let plan = decode_plan::<PADDED>(enc).unwrap();
+                assert_eq!(plan.required, raw_len);
+
+                sentinel.fill(0xa5);
+                let written = decode_with_plan::<URL_SAFE_ALPHABET>(
+                    enc,
+                    plan,
+                    codec::as_uninit_slice(&mut sentinel[..raw_len]),
+                )
+                .unwrap();
+                assert_eq!(written, raw_len);
+                assert_eq!(&sentinel[..raw_len], raw);
+                assert!(sentinel[raw_len..].iter().all(|&b| b == 0xa5));
+
+                sentinel.fill(0x5a);
+                let written_oversized = decode_with_plan::<URL_SAFE_ALPHABET>(
+                    enc,
+                    plan,
+                    codec::as_uninit_slice(&mut sentinel),
+                )
+                .unwrap();
+                assert_eq!(written_oversized, raw_len);
+                assert_eq!(&sentinel[..raw_len], raw);
+                assert!(sentinel[raw_len..].iter().all(|&b| b == 0x5a));
+            }
+        }
+
+        // Cover 12B/16B, 24B/28B AVX2, and 64B NEON + 16B tail wide-store thresholds.
+        check_bounds::<false, true>();
+        check_bounds::<true, false>();
+
+        // Verify every offset across a 64B NEON / 2x32B AVX2 chunk + 16B tail (including byte 63
+        // inside the first 64B chunk and trailing bytes in the 16B/4B remainder).
+        let mut raw_64 = [0_u8; 64];
+        fill_pattern(&mut raw_64, 91);
+        let mut clean_enc = [0_u8; 88];
+        encode_init::<false, true>(&raw_64, &mut clean_enc);
+        let mut out = [0_u8; 64];
+        for pos in 0..86 {
+            let mut mutated = clean_enc;
+            mutated[pos] = b'!';
+            assert_eq!(
+                decode_init::<false, true>(&mutated, &mut out),
+                Err(DecodeError::InvalidByte {
+                    index: pos,
+                    byte: b'!'
+                }),
+                "out-of-place mismatch at pos={pos}"
+            );
+            assert_eq!(
+                decode_in_place::<false, true>(&mut mutated),
+                Err(DecodeError::InvalidByte {
+                    index: pos,
+                    byte: b'!'
+                }),
+                "in-place mismatch at pos={pos}"
+            );
+        }
     }
 }

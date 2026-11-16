@@ -318,8 +318,11 @@ pub fn decode_in_place<
 ) -> Result<usize, DecodeError> {
     let plan = decode_plan::<PADDED>(buf)?;
 
-    let (input_index, output_index) =
-        arch::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, plan.complete_len);
+    let (input_index, output_index) = arch::decode_in_place::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
+        buf,
+        plan.complete_len,
+        plan.required,
+    );
     let written = decode_in_place_from::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(
         buf,
         plan.data_len,
@@ -1058,6 +1061,83 @@ mod tests {
         assert_eq!(
             decode_init::<true, true, false, false>(&lower_hex_with_upper, &mut out),
             Ok(25)
+        );
+    }
+
+    #[test]
+    fn bounded_wide_store_respects_exact_output_and_chunk_errors() {
+        fn check_bounds<const PADDED: bool>() {
+            let mut raw_buf = [0_u8; 80];
+            let mut enc_buf = [0_u8; 136];
+            let mut sentinel = [0_u8; 128];
+
+            for raw_len in 0..=64 {
+                let raw = &mut raw_buf[..raw_len];
+                fill_pattern(raw, raw_len + 71);
+                let enc_len = encoded_len::<PADDED>(raw_len).expect("within bounds");
+                let enc = &mut enc_buf[..enc_len];
+                encode_init::<false, PADDED, true>(raw, enc);
+
+                let plan = decode_plan::<PADDED>(enc).unwrap();
+                assert_eq!(plan.required, raw_len);
+
+                sentinel.fill(0xa5);
+                let written = decode_with_plan::<false, true, false>(
+                    enc,
+                    plan,
+                    codec::as_uninit_slice(&mut sentinel[..raw_len]),
+                )
+                .unwrap();
+                assert_eq!(written, raw_len);
+                assert_eq!(&sentinel[..raw_len], raw);
+                assert!(sentinel[raw_len..].iter().all(|&b| b == 0xa5));
+
+                sentinel.fill(0x5a);
+                let written_oversized = decode_with_plan::<false, true, false>(
+                    enc,
+                    plan,
+                    codec::as_uninit_slice(&mut sentinel),
+                )
+                .unwrap();
+                assert_eq!(written_oversized, raw_len);
+                assert_eq!(&sentinel[..raw_len], raw);
+                assert!(sentinel[raw_len..].iter().all(|&b| b == 0x5a));
+            }
+        }
+
+        // Cover single/paired 16-char SIMD bounds (10B, 16B, 20B, 25B, 26B, 30B, 40B, 64B).
+        check_bounds::<true>();
+        check_bounds::<false>();
+
+        // Reject invalid bytes across paired 32-char and trailing 16-char chunks without mutating
+        // unvalidated output offsets.
+        let mut sentinel = [0_u8; 40];
+        let mut bad_buf = [b'A'; 64];
+        for pos in [0_usize, 15, 16, 31, 32, 47, 48, 63] {
+            let mut input = bad_buf;
+            input[pos] = b'!';
+            assert_eq!(
+                decode_init::<false, true, true, false>(&input, &mut sentinel),
+                Err(DecodeError::InvalidByte {
+                    index: pos,
+                    byte: b'!'
+                })
+            );
+            assert_eq!(
+                decode_in_place::<false, true, true, false>(&mut input),
+                Err(DecodeError::InvalidByte {
+                    index: pos,
+                    byte: b'!'
+                })
+            );
+        }
+        bad_buf[63] = b'8';
+        assert_eq!(
+            decode_in_place::<false, true, true, false>(&mut bad_buf),
+            Err(DecodeError::InvalidByte {
+                index: 63,
+                byte: b'8'
+            })
         );
     }
 }
