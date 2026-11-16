@@ -535,11 +535,11 @@ unsafe fn decode_avx2<const UPPERCASE: bool, const STRICT_CASE: bool>(
             done_32 += 2;
         }
 
-        if done_32 < chunks_32 {
-            if let Some(packed) = decode_chunk_32::<UPPERCASE, STRICT_CASE>(in_ptr) {
-                _mm_storeu_si128(out_ptr.cast(), packed);
-                done_32 += 1;
-            }
+        if done_32 < chunks_32
+            && let Some(packed) = decode_chunk_32::<UPPERCASE, STRICT_CASE>(in_ptr)
+        {
+            _mm_storeu_si128(out_ptr.cast(), packed);
+            done_32 += 1;
         }
     }
 
