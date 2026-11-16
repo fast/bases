@@ -12,54 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bases::Base16Lower;
-use bases::Base16Upper;
 use bases::Base32;
-use bases::Base32Hex;
-use bases::Base32HexUnpadded;
-use bases::Base32Unpadded;
 use bases::Base64;
 use bases::Base64Unpadded;
-use bases::Base64Url;
-use bases::Base64UrlUnpadded;
 use bases::DecodeError;
 use bases::DecodeSliceError;
 use bases::Decoder;
 use bases::EncodeError;
 use bases::Encoder;
-use data_encoding::Encoding;
-
-#[test]
-fn streaming_preserves_wire_bytes_across_chunk_boundaries() {
-    fn check<C: bases::Codec>(input: &[u8], reference: &Encoding) {
-        let expected = reference.encode(input);
-        for chunk_len in 1..=11 {
-            assert_streaming::<C>(input, &expected, chunk_len);
-        }
-    }
-
-    let mut input = [0_u8; 67];
-
-    for length in 0..=input.len() {
-        for (index, byte) in input[..length].iter_mut().enumerate() {
-            *byte = index
-                .wrapping_mul(131)
-                .wrapping_add(length.wrapping_mul(17)) as u8;
-        }
-
-        let input = &input[..length];
-        check::<Base16Upper>(input, &data_encoding::HEXUPPER);
-        check::<Base16Lower>(input, &data_encoding::HEXLOWER);
-        check::<Base32>(input, &data_encoding::BASE32);
-        check::<Base32Unpadded>(input, &data_encoding::BASE32_NOPAD);
-        check::<Base32Hex>(input, &data_encoding::BASE32HEX);
-        check::<Base32HexUnpadded>(input, &data_encoding::BASE32HEX_NOPAD);
-        check::<Base64>(input, &data_encoding::BASE64);
-        check::<Base64Unpadded>(input, &data_encoding::BASE64_NOPAD);
-        check::<Base64Url>(input, &data_encoding::BASE64URL);
-        check::<Base64UrlUnpadded>(input, &data_encoding::BASE64URL_NOPAD);
-    }
-}
 
 #[test]
 fn small_output_errors_leave_stream_state_unchanged() {
@@ -245,65 +205,4 @@ fn finish_errors_can_be_propagated_without_recovery() {
             available: 0
         }),
     );
-}
-
-fn assert_streaming<C: bases::Codec>(input: &[u8], expected_encoded: &str, chunk_len: usize) {
-    let mut actual_encoded = String::new();
-    let mut encoder = C::encoder();
-    let mut encoded_buffer = [0_u8; 24];
-
-    for chunk in input.chunks(chunk_len) {
-        let required = encoder.update_output_len(chunk.len()).unwrap();
-        let encoded = encoder
-            .update(chunk, &mut encoded_buffer[..required])
-            .unwrap();
-        actual_encoded.push_str(encoded);
-    }
-    let required = encoder.finish_output_len();
-    if required > 0 {
-        let failure = encoder
-            .finish(&mut encoded_buffer[..required - 1])
-            .unwrap_err();
-        assert_eq!(
-            failure.error(),
-            &EncodeError::OutputTooSmall {
-                required,
-                available: required - 1
-            },
-        );
-        encoder = failure.into_inner();
-    }
-    actual_encoded.push_str(encoder.finish(&mut encoded_buffer[..required]).unwrap());
-    assert_eq!(
-        actual_encoded,
-        expected_encoded,
-        "encoding with {}",
-        C::name()
-    );
-
-    let mut actual_decoded = Vec::new();
-    let mut decoder = C::decoder();
-    let mut decoded_buffer = Vec::new();
-    for chunk in expected_encoded.as_bytes().chunks(chunk_len) {
-        decoded_buffer.resize(decoder.max_update_output_len(chunk.len()), 0);
-        let decoded = decoder.update(chunk, &mut decoded_buffer).unwrap();
-        actual_decoded.extend_from_slice(decoded);
-    }
-    let required = decoder.finish_output_len().unwrap();
-    decoded_buffer.resize(required, 0);
-    if required > 0 {
-        let failure = decoder
-            .finish(&mut decoded_buffer[..required - 1])
-            .unwrap_err();
-        assert_eq!(
-            failure.error(),
-            &DecodeSliceError::OutputTooSmall {
-                required,
-                available: required - 1
-            },
-        );
-        decoder = failure.into_inner();
-    }
-    actual_decoded.extend_from_slice(decoder.finish(&mut decoded_buffer).unwrap());
-    assert_eq!(actual_decoded, input, "decoding with {}", C::name());
 }

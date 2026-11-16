@@ -143,3 +143,35 @@ mod tests {
         let _ = (Base64::new(), Base16Lower::new(), Base64UrlUnpadded::new());
     }
 }
+
+#[cfg(all(test, not(feature = "alloc")))]
+mod tests_no_alloc {
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    use crate::Base64;
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Digest {
+        #[serde(
+            serialize_with = "Base64::serialize",
+            deserialize_with = "Base64::deserialize_array"
+        )]
+        bytes: [u8; 3],
+    }
+
+    #[test]
+    fn fixed_array_serde_without_alloc() {
+        let digest = Digest { bytes: *b"foo" };
+        let wire = r#"{"bytes":"Zm9v"}"#;
+        assert_eq!(serde_json::to_string(&digest).unwrap(), wire);
+        assert_eq!(serde_json::from_str::<Digest>(wire).unwrap(), digest);
+        for invalid in [
+            r#"{"bytes":"Zg=="}"#,
+            r#"{"bytes":"Zm9vYg=="}"#,
+            r#"{"bytes":"Zm!v"}"#,
+        ] {
+            assert!(serde_json::from_str::<Digest>(invalid).is_err());
+        }
+    }
+}

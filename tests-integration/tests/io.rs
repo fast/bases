@@ -16,49 +16,10 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 
-use bases::Base16Lower;
 use bases::Base32;
-use bases::Base32Unpadded;
 use bases::Base64;
-use bases::Base64UrlUnpadded;
-use bases::Codec;
 use bases::DecodeError;
-use bases::io::DecoderReader;
 use bases::io::EncoderWriter;
-
-struct ChunkedWriter {
-    inner: Vec<u8>,
-    max_write: usize,
-    interrupt_every: usize,
-    calls: usize,
-}
-
-impl ChunkedWriter {
-    fn new(max_write: usize, interrupt_every: usize) -> Self {
-        Self {
-            inner: Vec::new(),
-            max_write,
-            interrupt_every,
-            calls: 0,
-        }
-    }
-}
-
-impl Write for ChunkedWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.calls += 1;
-        if self.interrupt_every > 0 && self.calls.is_multiple_of(self.interrupt_every) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
-        }
-        let take = buf.len().min(self.max_write);
-        self.inner.extend_from_slice(&buf[..take]);
-        Ok(take)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 struct ChunkedReader<'a> {
     data: &'a [u8],
@@ -91,51 +52,6 @@ impl Read for ChunkedReader<'_> {
         buf[..take].copy_from_slice(&self.data[self.pos..self.pos + take]);
         self.pos += take;
         Ok(take)
-    }
-}
-
-#[test]
-fn encoder_writer_and_decoder_reader_roundtrip_across_chunk_sizes() {
-    fn check<C: Codec>(input: &[u8], write_chunk: usize, read_chunk: usize) {
-        let mut writer = EncoderWriter::<C, _>::new(ChunkedWriter::new(write_chunk, 3));
-        for chunk in input.chunks(write_chunk) {
-            writer.write_all(chunk).unwrap();
-        }
-        writer.flush().unwrap();
-        let inner = writer.finish().unwrap();
-        let expected_encoded = C::encode(input);
-        assert_eq!(inner.inner, expected_encoded.as_bytes());
-
-        let mut reader = DecoderReader::<C, _>::new(ChunkedReader::new(&inner.inner, 1, 2));
-        let mut decoded = Vec::new();
-        let mut read_buf = vec![0_u8; read_chunk];
-        loop {
-            let n = reader.read(&mut read_buf).unwrap();
-            if n == 0 {
-                break;
-            }
-            decoded.extend_from_slice(&read_buf[..n]);
-        }
-        assert_eq!(decoded, input, "profile {}", C::name());
-    }
-
-    let payloads: [&[u8]; 6] = [
-        b"",
-        b"x",
-        b"fo",
-        b"foobar",
-        &vec![0x5a_u8; 1009],
-        &(0..1531_u16).map(|i| (i % 251) as u8).collect::<Vec<_>>(),
-    ];
-
-    for payload in payloads {
-        for &(write_chunk, read_chunk) in &[(1, 1), (7, 3), (13, 5), (257, 17), (1009, 1024)] {
-            check::<Base16Lower>(payload, write_chunk, read_chunk);
-            check::<Base32>(payload, write_chunk, read_chunk);
-            check::<Base32Unpadded>(payload, write_chunk, read_chunk);
-            check::<Base64>(payload, write_chunk, read_chunk);
-            check::<Base64UrlUnpadded>(payload, write_chunk, read_chunk);
-        }
     }
 }
 
@@ -191,4 +107,55 @@ fn decoder_reader_exposes_invalid_data_and_inner_accessors() {
         );
         assert_eq!(reader.into_inner().data, wire);
     }
+}
+
+struct ScriptedWriter {
+    writes: std::vec::IntoIter<io::Result<usize>>,
+    bytes: Vec<u8>,
+}
+
+impl Write for ScriptedWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let count = self.writes.next().unwrap_or(Ok(buf.len()))?.min(buf.len());
+        self.bytes.extend_from_slice(&buf[..count]);
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn writer_retries_a_failed_quantum_without_consuming_pending_input() {
+    for failure in [Ok(0), Err(io::Error::from(io::ErrorKind::WouldBlock))] {
+        let inner = ScriptedWriter {
+            writes: vec![failure].into_iter(),
+            bytes: Vec::new(),
+        };
+        let mut writer = Base64::encoder_writer(inner);
+        assert_eq!(writer.write(b"f").unwrap(), 1);
+        match writer.write(b"oo") {
+            Ok(count) => assert_eq!(count, 0),
+            Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+        }
+        assert_eq!(writer.write(b"oo").unwrap(), 2);
+        assert_eq!(writer.finish().unwrap().bytes, b"Zm9v");
+    }
+}
+
+#[test]
+fn writer_retries_buffered_output_without_duplicating_accepted_input() {
+    let inner = ScriptedWriter {
+        writes: vec![Ok(2), Err(io::Error::from(io::ErrorKind::WouldBlock))].into_iter(),
+        bytes: Vec::new(),
+    };
+    let mut writer = Base64::encoder_writer(inner);
+    assert_eq!(writer.write(b"foo").unwrap(), 3);
+    assert_eq!(
+        writer.write(b"bar").unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(writer.write(b"bar").unwrap(), 3);
+    assert_eq!(writer.finish().unwrap().bytes, b"Zm9vYmFy");
 }

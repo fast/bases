@@ -12,31 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bases::Base16Lower;
-use bases::Base16Upper;
-use bases::Base32;
-use bases::Base32Hex;
-use bases::Base32HexUnpadded;
-use bases::Base32Unpadded;
-use bases::Base64;
-use bases::Base64Unpadded;
-use bases::Base64Url;
-use bases::Base64UrlUnpadded;
 use bases::Codec;
 use bases::EncodeError;
+use data_encoding::Encoding;
 
-#[test]
-fn length_queries_match_wide_arithmetic_at_usize_boundaries() {
-    assert_lengths::<Base16Upper>(1, 2, false);
-    assert_lengths::<Base16Lower>(1, 2, false);
-    assert_lengths::<Base32>(5, 8, true);
-    assert_lengths::<Base32Unpadded>(5, 8, false);
-    assert_lengths::<Base32Hex>(5, 8, true);
-    assert_lengths::<Base32HexUnpadded>(5, 8, false);
-    assert_lengths::<Base64>(3, 4, true);
-    assert_lengths::<Base64Unpadded>(3, 4, false);
-    assert_lengths::<Base64Url>(3, 4, true);
-    assert_lengths::<Base64UrlUnpadded>(3, 4, false);
+pub fn check<C: Codec>(reference: &Encoding) {
+    let (input_quantum, encoded_quantum) = match reference.bit_width() {
+        4 => (1, 2),
+        5 => (5, 8),
+        6 => (3, 4),
+        _ => unreachable!(),
+    };
+    assert_lengths::<C>(
+        input_quantum,
+        encoded_quantum,
+        reference.specification().padding.is_some(),
+    );
 }
 
 fn assert_lengths<C: Codec>(input_quantum: usize, encoded_quantum: usize, padded: bool) {

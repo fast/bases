@@ -16,7 +16,6 @@ use core::fmt;
 use core::fmt::Write;
 use std::array;
 
-use bases::Base16Lower;
 use bases::Base32;
 use bases::Base64;
 use bases::HexDisplay;
@@ -76,9 +75,15 @@ fn display_handles_profile_cutoffs_and_chunk_boundaries() {
         let slice = &buf[..len];
         assert_eq!(
             format!("{:x}", HexDisplay(slice)),
-            Base16Lower::encode(slice)
+            data_encoding::HEXLOWER.encode(slice)
         );
-        assert_eq!(Base32::display(slice).to_string(), Base32::encode(slice));
-        assert_eq!(Base64::display(slice).to_string(), Base64::encode(slice));
+        assert_eq!(
+            Base32::display(slice).to_string(),
+            data_encoding::BASE32.encode(slice)
+        );
+        assert_eq!(
+            Base64::display(slice).to_string(),
+            data_encoding::BASE64.encode(slice)
+        );
     }
 }
