@@ -126,6 +126,7 @@ impl Runner {
             return;
         }
         self.matched += 1;
+        let total_peers = peers.len();
         let peers = if options.baseline_only {
             &peers[..1]
         } else {
@@ -137,10 +138,8 @@ impl Runner {
             println!("{name}  {rounds} rounds  [{}]", labels.join(", "));
             return;
         }
-        let run = |work: &dyn Fn(&Fixture, usize), n| {
-            let fixture = Fixture::new(size, reference, direction);
-            work(&fixture, n);
-        };
+        let fixture = Fixture::new(size, reference, direction);
+        let run = |work: &dyn Fn(&Fixture, usize), n| work(&fixture, n);
         if options.test {
             for (label, work) in peers {
                 run(work, 1);
@@ -148,7 +147,8 @@ impl Runner {
             }
             return;
         }
-        let mut samples = vec![Vec::with_capacity(options.repeat.get()); peers.len()];
+        // Keep bookkeeping allocations identical when selecting only the baseline.
+        let mut samples = vec![Vec::with_capacity(options.repeat.get()); total_peers];
         for repetition in 0..options.repeat.get() {
             for offset in 0..peers.len() {
                 let index = (repetition + offset) % peers.len();

@@ -44,6 +44,14 @@ trap cleanup EXIT
 git worktree add --detach "$baseline_tree" HEAD
 git -C "$baseline_tree" restore --source="$baseline" --worktree -- bases
 
+run() {
+    local revision=$1
+    shift
+    # Keep argv[0] identical so revision names cannot change the process's allocation layout.
+    cp "$scratch/$revision" "$scratch/codec"
+    taskset -c "$cpu" "$scratch/codec" "$@"
+}
+
 build() {
     local revision=$1 tree=$2 binary
     (
@@ -57,7 +65,7 @@ build() {
         cp "$binary" "$scratch/$revision"
     )
     test -x "$scratch/$revision"
-    taskset -c "$cpu" "$scratch/$revision" --test
+    run "$revision" --test
 }
 
 build before "$baseline_tree"
@@ -73,9 +81,11 @@ while read -r scenario _; do
         fi
         for revision in "${revisions[@]}"; do
             printf 'revision=%s sample=%s scenario=%s\n' "$revision" "$sample" "$scenario"
-            taskset -c "$cpu" "$scratch/$revision" "$scenario" --baseline-only --repeat 1 --raw
+            run "$revision" "$scenario" --baseline-only --repeat 1 --raw
         done
     done
 done < "$results/scenarios.log" | tee "$results/revisions.log"
 
-taskset -c "$cpu" "$scratch/after" --repeat 5 --raw | tee "$results/peers.log"
+while read -r scenario _; do
+    run after "$scenario" --repeat 5 --raw
+done < "$results/scenarios.log" | tee "$results/peers.log"
