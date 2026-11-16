@@ -26,32 +26,36 @@ use x86_arch::__m128i;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::__m256i;
 use x86_arch::_mm_add_epi8;
+use x86_arch::_mm_adds_epu8;
 use x86_arch::_mm_and_si128;
-use x86_arch::_mm_cmpeq_epi8;
 use x86_arch::_mm_loadu_si128;
 use x86_arch::_mm_maddubs_epi16;
+use x86_arch::_mm_min_epu8;
 use x86_arch::_mm_movemask_epi8;
 use x86_arch::_mm_or_si128;
 use x86_arch::_mm_packus_epi16;
 use x86_arch::_mm_set1_epi8;
 use x86_arch::_mm_set1_epi16;
 use x86_arch::_mm_setr_epi8;
-use x86_arch::_mm_setzero_si128;
 use x86_arch::_mm_shuffle_epi8;
 use x86_arch::_mm_srli_epi16;
 use x86_arch::_mm_storeu_si128;
+use x86_arch::_mm_sub_epi8;
+use x86_arch::_mm_subs_epu8;
 use x86_arch::_mm_unpackhi_epi8;
 use x86_arch::_mm_unpacklo_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_add_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
-use x86_arch::_mm256_and_si256;
+use x86_arch::_mm256_adds_epu8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
-use x86_arch::_mm256_cmpeq_epi8;
+use x86_arch::_mm256_and_si256;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_loadu_si256;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_maddubs_epi16;
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+use x86_arch::_mm256_min_epu8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_movemask_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -69,31 +73,19 @@ use x86_arch::_mm256_set1_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_set1_epi16;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
-use x86_arch::_mm256_setzero_si256;
-#[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_shuffle_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_srli_epi16;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_storeu_si256;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
+use x86_arch::_mm256_sub_epi8;
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+use x86_arch::_mm256_subs_epu8;
+#[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_unpackhi_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_unpacklo_epi8;
-
-const HI_MASK_MIXED: [i8; 16] = [0, 0, 0, 1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-const HI_MASK_UPPER: [i8; 16] = [0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-const HI_MASK_LOWER: [i8; 16] = [0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> [i8; 16] {
-    if !STRICT_CASE {
-        HI_MASK_MIXED
-    } else if UPPERCASE {
-        HI_MASK_UPPER
-    } else {
-        HI_MASK_LOWER
-    }
-}
 
 #[inline]
 pub fn encode<const UPPERCASE: bool>(
@@ -364,16 +356,32 @@ unsafe fn encode_avx2<const UPPERCASE: bool>(
 /// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn decode_128_tables<const UPPERCASE: bool, const STRICT_CASE: bool>()
--> (__m128i, __m128i, __m128i) {
-    let m = select_hi_mask::<UPPERCASE, STRICT_CASE>();
-    let hi_mask = _mm_setr_epi8(
-        m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12], m[13],
-        m[14], m[15],
+unsafe fn decode_nibbles_128<const UPPERCASE: bool, const STRICT_CASE: bool>(
+    v: __m128i,
+) -> __m128i {
+    // Saturation maps digits to 0-9 and letters to 10-15; all other bytes stay above 15.
+    let digits = _mm_sub_epi8(
+        _mm_subs_epu8(
+            _mm_add_epi8(v, _mm_set1_epi8(!b'9' as i8)),
+            _mm_set1_epi8(6),
+        ),
+        _mm_set1_epi8(-16),
     );
-    let lo_mask = _mm_setr_epi8(1, 7, 7, 7, 7, 7, 7, 1, 1, 1, 0, 0, 0, 0, 0, 0);
-    let hi_off = _mm_setr_epi8(0, 0, 0, 0, 9, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    (hi_mask, lo_mask, hi_off)
+    let letters = if STRICT_CASE {
+        v
+    } else {
+        _mm_and_si128(v, _mm_set1_epi8(!0x20))
+    };
+    let base = if STRICT_CASE && !UPPERCASE {
+        b'a'
+    } else {
+        b'A'
+    };
+    let letters = _mm_adds_epu8(
+        _mm_sub_epi8(letters, _mm_set1_epi8(base as i8)),
+        _mm_set1_epi8(10),
+    );
+    _mm_min_epu8(digits, letters)
 }
 
 /// # Safety
@@ -381,41 +389,23 @@ unsafe fn decode_128_tables<const UPPERCASE: bool, const STRICT_CASE: bool>()
 /// Caller must ensure `in_ptr` is valid for 32 reads and SSSE3 is enabled.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn decode_chunk_32(
+unsafe fn decode_chunk_32<const UPPERCASE: bool, const STRICT_CASE: bool>(
     in_ptr: *const u8,
-    hi_mask: __m128i,
-    lo_mask: __m128i,
-    hi_off: __m128i,
-    mask_0f: __m128i,
-    mul_0110: __m128i,
-    zero: __m128i,
 ) -> Option<__m128i> {
     // SAFETY: Caller guarantees `in_ptr` is valid for 32 readable bytes and SSSE3 is enabled.
     unsafe {
         let in0 = _mm_loadu_si128(in_ptr.cast());
         let in1 = _mm_loadu_si128(in_ptr.add(16).cast());
 
-        let hi0 = _mm_and_si128(_mm_srli_epi16(in0, 4), mask_0f);
-        let lo0 = _mm_and_si128(in0, mask_0f);
-        let chk0 = _mm_and_si128(
-            _mm_shuffle_epi8(hi_mask, hi0),
-            _mm_shuffle_epi8(lo_mask, lo0),
-        );
-
-        let hi1 = _mm_and_si128(_mm_srli_epi16(in1, 4), mask_0f);
-        let lo1 = _mm_and_si128(in1, mask_0f);
-        let chk1 = _mm_and_si128(
-            _mm_shuffle_epi8(hi_mask, hi1),
-            _mm_shuffle_epi8(lo_mask, lo1),
-        );
-
-        let err = _mm_or_si128(_mm_cmpeq_epi8(chk0, zero), _mm_cmpeq_epi8(chk1, zero));
+        let nib0 = decode_nibbles_128::<UPPERCASE, STRICT_CASE>(in0);
+        let nib1 = decode_nibbles_128::<UPPERCASE, STRICT_CASE>(in1);
+        // Biasing by 127 - 15 sets the sign bit exactly when either nibble is invalid.
+        let err = _mm_adds_epu8(_mm_or_si128(nib0, nib1), _mm_set1_epi8(112));
         if _mm_movemask_epi8(err) != 0 {
             return None;
         }
 
-        let nib0 = _mm_add_epi8(lo0, _mm_shuffle_epi8(hi_off, hi0));
-        let nib1 = _mm_add_epi8(lo1, _mm_shuffle_epi8(hi_off, hi1));
+        let mul_0110 = _mm_set1_epi16(0x0110);
         let pair0 = _mm_maddubs_epi16(nib0, mul_0110);
         let pair1 = _mm_maddubs_epi16(nib1, mul_0110);
         Some(_mm_packus_epi16(pair0, pair1))
@@ -440,15 +430,8 @@ unsafe fn decode_ssse3<const UPPERCASE: bool, const STRICT_CASE: bool>(
     // SAFETY: Caller guarantees `chunks * 32` reads at `in_ptr`, `chunks * 16` writes at `out_ptr`,
     // and non-overtaking pointer advancement for in-place decoding.
     unsafe {
-        let (hi_mask, lo_mask, hi_off) = decode_128_tables::<UPPERCASE, STRICT_CASE>();
-        let mask_0f = _mm_set1_epi8(0x0f);
-        let mul_0110 = _mm_set1_epi16(0x0110);
-        let zero = _mm_setzero_si128();
-
         while done < chunks {
-            let Some(packed) =
-                decode_chunk_32(in_ptr, hi_mask, lo_mask, hi_off, mask_0f, mul_0110, zero)
-            else {
+            let Some(packed) = decode_chunk_32::<UPPERCASE, STRICT_CASE>(in_ptr) else {
                 break;
             };
             _mm_storeu_si128(out_ptr.cast(), packed);
@@ -462,45 +445,59 @@ unsafe fn decode_ssse3<const UPPERCASE: bool, const STRICT_CASE: bool>(
 
 /// # Safety
 ///
+/// Requires AVX2 support on the current CPU.
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+#[inline]
+#[target_feature(enable = "avx2")]
+unsafe fn decode_nibbles_256<const UPPERCASE: bool, const STRICT_CASE: bool>(
+    v: __m256i,
+) -> __m256i {
+    let digits = _mm256_sub_epi8(
+        _mm256_subs_epu8(
+            _mm256_add_epi8(v, _mm256_set1_epi8(!b'9' as i8)),
+            _mm256_set1_epi8(6),
+        ),
+        _mm256_set1_epi8(-16),
+    );
+    let letters = if STRICT_CASE {
+        v
+    } else {
+        _mm256_and_si256(v, _mm256_set1_epi8(!0x20))
+    };
+    let base = if STRICT_CASE && !UPPERCASE {
+        b'a'
+    } else {
+        b'A'
+    };
+    let letters = _mm256_adds_epu8(
+        _mm256_sub_epi8(letters, _mm256_set1_epi8(base as i8)),
+        _mm256_set1_epi8(10),
+    );
+    _mm256_min_epu8(digits, letters)
+}
+
+/// # Safety
+///
 /// Caller must ensure `in_ptr` is valid for 64 reads and AVX2 is enabled.
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn decode_chunk_64(
+unsafe fn decode_chunk_64<const UPPERCASE: bool, const STRICT_CASE: bool>(
     in_ptr: *const u8,
-    hi_mask: __m256i,
-    lo_mask: __m256i,
-    hi_off: __m256i,
-    mask_0f: __m256i,
-    mul_0110: __m256i,
-    zero: __m256i,
 ) -> Option<__m256i> {
     // SAFETY: Caller guarantees `in_ptr` is valid for 64 readable bytes and AVX2 is enabled.
     unsafe {
         let in0 = _mm256_loadu_si256(in_ptr.cast());
         let in1 = _mm256_loadu_si256(in_ptr.add(32).cast());
 
-        let hi0 = _mm256_and_si256(_mm256_srli_epi16(in0, 4), mask_0f);
-        let lo0 = _mm256_and_si256(in0, mask_0f);
-        let chk0 = _mm256_and_si256(
-            _mm256_shuffle_epi8(hi_mask, hi0),
-            _mm256_shuffle_epi8(lo_mask, lo0),
-        );
-
-        let hi1 = _mm256_and_si256(_mm256_srli_epi16(in1, 4), mask_0f);
-        let lo1 = _mm256_and_si256(in1, mask_0f);
-        let chk1 = _mm256_and_si256(
-            _mm256_shuffle_epi8(hi_mask, hi1),
-            _mm256_shuffle_epi8(lo_mask, lo1),
-        );
-
-        let err = _mm256_or_si256(_mm256_cmpeq_epi8(chk0, zero), _mm256_cmpeq_epi8(chk1, zero));
+        let nib0 = decode_nibbles_256::<UPPERCASE, STRICT_CASE>(in0);
+        let nib1 = decode_nibbles_256::<UPPERCASE, STRICT_CASE>(in1);
+        let err = _mm256_adds_epu8(_mm256_or_si256(nib0, nib1), _mm256_set1_epi8(112));
         if _mm256_movemask_epi8(err) != 0 {
             return None;
         }
 
-        let nib0 = _mm256_add_epi8(lo0, _mm256_shuffle_epi8(hi_off, hi0));
-        let nib1 = _mm256_add_epi8(lo1, _mm256_shuffle_epi8(hi_off, hi1));
+        let mul_0110 = _mm256_set1_epi16(0x0110);
         let pair0 = _mm256_maddubs_epi16(nib0, mul_0110);
         let pair1 = _mm256_maddubs_epi16(nib1, mul_0110);
         let packed = _mm256_packus_epi16(pair0, pair1);
@@ -528,35 +525,18 @@ unsafe fn decode_avx2<const UPPERCASE: bool, const STRICT_CASE: bool>(
     // SAFETY: Caller guarantees `chunks_32 * 32` reads at `in_ptr`, `chunks_32 * 16` writes at
     // `out_ptr`, and non-overtaking pointer advancement for in-place decoding.
     unsafe {
-        let (hi_128, lo_128, off_128) = decode_128_tables::<UPPERCASE, STRICT_CASE>();
-        if chunks_64 > 0 {
-            let hi_mask = _mm256_set_m128i(hi_128, hi_128);
-            let lo_mask = _mm256_set_m128i(lo_128, lo_128);
-            let hi_off = _mm256_set_m128i(off_128, off_128);
-            let mask_0f = _mm256_set1_epi8(0x0f);
-            let mul_0110 = _mm256_set1_epi16(0x0110);
-            let zero = _mm256_setzero_si256();
-
-            for _ in 0..chunks_64 {
-                let Some(packed) =
-                    decode_chunk_64(in_ptr, hi_mask, lo_mask, hi_off, mask_0f, mul_0110, zero)
-                else {
-                    return done_32;
-                };
-                _mm256_storeu_si256(out_ptr.cast(), packed);
-                in_ptr = in_ptr.add(64);
-                out_ptr = out_ptr.add(32);
-                done_32 += 2;
-            }
+        for _ in 0..chunks_64 {
+            let Some(packed) = decode_chunk_64::<UPPERCASE, STRICT_CASE>(in_ptr) else {
+                return done_32;
+            };
+            _mm256_storeu_si256(out_ptr.cast(), packed);
+            in_ptr = in_ptr.add(64);
+            out_ptr = out_ptr.add(32);
+            done_32 += 2;
         }
 
         if done_32 < chunks_32 {
-            let mask_0f = _mm_set1_epi8(0x0f);
-            let mul_0110 = _mm_set1_epi16(0x0110);
-            let zero = _mm_setzero_si128();
-            if let Some(packed) =
-                decode_chunk_32(in_ptr, hi_128, lo_128, off_128, mask_0f, mul_0110, zero)
-            {
+            if let Some(packed) = decode_chunk_32::<UPPERCASE, STRICT_CASE>(in_ptr) {
                 _mm_storeu_si128(out_ptr.cast(), packed);
                 done_32 += 1;
             }
