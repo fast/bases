@@ -18,6 +18,7 @@ use std::hint::black_box;
 use std::io;
 use std::io::Read;
 use std::io::Write as _;
+use std::str;
 
 use base32ct::Encoding as _;
 use base64::Engine as _;
@@ -243,7 +244,7 @@ fn owned(
     move |fixture, rounds| match fixture.direction {
         Direction::Encode => allocations(&fixture.input[..], &fixture.expected, rounds, &encode),
         Direction::Decode => {
-            let text = std::str::from_utf8(&fixture.input).unwrap();
+            let text = str::from_utf8(&fixture.input).unwrap();
             allocations(text, &fixture.expected, rounds, &decode);
         }
     }

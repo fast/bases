@@ -17,6 +17,8 @@
 use core::arch::aarch64::int16x8_t;
 use core::arch::aarch64::uint8x16_t;
 use core::arch::aarch64::uint8x16x2_t;
+use core::arch::aarch64::uint16x8_t;
+use core::arch::aarch64::uint32x4_t;
 use core::arch::aarch64::vaddq_u8;
 use core::arch::aarch64::vandq_u8;
 use core::arch::aarch64::vandq_u16;
@@ -50,6 +52,7 @@ use core::arch::aarch64::vshrq_n_u32;
 use core::arch::aarch64::vshrq_n_u64;
 use core::arch::aarch64::vst1_u8;
 use core::arch::aarch64::vst1q_u8;
+use core::ptr;
 
 const STANDARD_UPPER: [u8; 32] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const STANDARD_LOWER: [u8; 32] = *b"abcdefghijklmnopqrstuvwxyz234567";
@@ -238,7 +241,7 @@ unsafe fn decode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
                 break;
             };
             vst1_u8(out_ptr, vget_low_u8(res));
-            core::ptr::write_unaligned(
+            ptr::write_unaligned(
                 out_ptr.add(8).cast::<u16>(),
                 vgetq_lane_u16::<4>(vreinterpretq_u16_u8(res)),
             );
@@ -302,7 +305,7 @@ unsafe fn decode_in_place_neon<
                 break;
             };
             vst1_u8(out_ptr, vget_low_u8(res));
-            core::ptr::write_unaligned(
+            ptr::write_unaligned(
                 out_ptr.add(8).cast::<u16>(),
                 vgetq_lane_u16::<4>(vreinterpretq_u16_u8(res)),
             );
@@ -327,8 +330,8 @@ unsafe fn decode_chunk_16_neon(
     roll_tbl: uint8x16_t,
     pack_shuf: uint8x16_t,
     mask_0f: uint8x16_t,
-    mask_001f: core::arch::aarch64::uint16x8_t,
-    mask_03ff: core::arch::aarch64::uint32x4_t,
+    mask_001f: uint16x8_t,
+    mask_03ff: uint32x4_t,
 ) -> Option<uint8x16_t> {
     let hi = vshrq_n_u8::<4>(v);
     let lo = vandq_u8(v, mask_0f);

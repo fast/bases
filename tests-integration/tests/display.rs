@@ -14,6 +14,7 @@
 
 use core::fmt;
 use core::fmt::Write;
+use std::array;
 
 use bases::Base32;
 use bases::Base64;
@@ -21,7 +22,7 @@ use bases::HexDisplay;
 
 #[test]
 fn display_writes_the_complete_message() {
-    let input: [u8; 1021] = core::array::from_fn(|index| index as u8);
+    let input: [u8; 1021] = array::from_fn(|index| index as u8);
     assert!(Base32::display(&[]).to_string().is_empty());
     assert_eq!(
         format!("{:.3}", Base32::display(&input)),

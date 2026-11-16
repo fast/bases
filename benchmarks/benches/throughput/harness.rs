@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::num::NonZeroUsize;
+use std::process;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -107,7 +108,7 @@ impl Runner {
     pub fn finish(self) {
         if self.matched == 0 {
             eprintln!("No matching benchmark. Use --list to see the scenarios.");
-            std::process::exit(1);
+            process::exit(1);
         }
     }
 

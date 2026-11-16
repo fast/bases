@@ -18,6 +18,9 @@
 use core::arch::x86 as x86_arch;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64 as x86_arch;
+use core::ptr;
+#[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+use std::arch::is_x86_feature_detected;
 
 use x86_arch::__m128i;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -133,10 +136,10 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [u8],
 ) -> (usize, usize) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { encode_avx2::<EXTENDED_HEX, UPPERCASE>(input, output) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { encode_ssse3::<EXTENDED_HEX, UPPERCASE>(input, output) }
     } else {
@@ -172,10 +175,10 @@ pub fn decode<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE
     input: &[u8],
     output: &mut [u8],
 ) -> (usize, usize) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(input, output) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { decode_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(input, output) }
     } else {
@@ -211,10 +214,10 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
     buf: &mut [u8],
     complete_len: usize,
 ) -> (usize, usize) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_in_place_avx2::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, complete_len) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { decode_in_place_ssse3::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>(buf, complete_len) }
     } else {
@@ -547,7 +550,7 @@ unsafe fn decode_ssse3<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
                 break;
             };
             _mm_storel_epi64(out_ptr.cast(), res);
-            core::ptr::write_unaligned(
+            ptr::write_unaligned(
                 out_ptr.add(8).cast::<u16>(),
                 _mm_extract_epi16::<4>(res) as u16,
             );
@@ -606,7 +609,7 @@ unsafe fn decode_in_place_ssse3<
                 break;
             };
             _mm_storel_epi64(out_ptr.cast(), res);
-            core::ptr::write_unaligned(
+            ptr::write_unaligned(
                 out_ptr.add(8).cast::<u16>(),
                 _mm_extract_epi16::<4>(res) as u16,
             );
@@ -675,7 +678,7 @@ unsafe fn store_20_avx2(out_ptr: *mut u8, res: __m256i) {
         let lo16 = _mm_or_si128(res_lo, _mm_slli_si128::<10>(res_hi));
         _mm_storeu_si128(out_ptr.cast(), lo16);
         let hi4 = _mm_srli_si128::<6>(res_hi);
-        core::ptr::write_unaligned(out_ptr.add(16).cast::<i32>(), _mm_cvtsi128_si32(hi4));
+        ptr::write_unaligned(out_ptr.add(16).cast::<i32>(), _mm_cvtsi128_si32(hi4));
     }
 }
 
@@ -749,7 +752,7 @@ unsafe fn decode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
             ) {
                 let out_ptr = output.as_mut_ptr().add(output_index);
                 _mm_storel_epi64(out_ptr.cast(), res);
-                core::ptr::write_unaligned(
+                ptr::write_unaligned(
                     out_ptr.add(8).cast::<u16>(),
                     _mm_extract_epi16::<4>(res) as u16,
                 );
@@ -837,7 +840,7 @@ unsafe fn decode_in_place_avx2<
             ) {
                 let out_ptr = ptr.add(output_index);
                 _mm_storel_epi64(out_ptr.cast(), res);
-                core::ptr::write_unaligned(
+                ptr::write_unaligned(
                     out_ptr.add(8).cast::<u16>(),
                     _mm_extract_epi16::<4>(res) as u16,
                 );

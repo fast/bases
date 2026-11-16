@@ -14,6 +14,7 @@
 
 //! AArch64 NEON Base64 kernels.
 
+use core::arch::aarch64::int8x16_t;
 use core::arch::aarch64::uint8x16_t;
 use core::arch::aarch64::uint8x16x3_t;
 use core::arch::aarch64::uint8x16x4_t;
@@ -47,6 +48,7 @@ use core::arch::aarch64::vst1q_u8;
 use core::arch::aarch64::vst3q_u8;
 use core::arch::aarch64::vst4q_u8;
 use core::arch::aarch64::vsubq_u8;
+use core::ptr;
 
 const STANDARD: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const URL_SAFE: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -188,7 +190,7 @@ unsafe fn encode_neon<const URL_SAFE_ALPHABET: bool>(
                     vld1q_u8(in_ptr)
                 } else {
                     let lo = vld1_u8(in_ptr);
-                    let hi32 = core::ptr::read_unaligned(in_ptr.add(8).cast::<u32>());
+                    let hi32 = ptr::read_unaligned(in_ptr.add(8).cast::<u32>());
                     let hi = vreinterpret_u8_u32(vset_lane_u32::<0>(hi32, vdup_n_u32(0)));
                     vcombine_u8(lo, hi)
                 };
@@ -286,7 +288,7 @@ unsafe fn decode_neon<const URL_SAFE_ALPHABET: bool>(
                     return (done_16, true);
                 };
                 vst1_u8(out_ptr, vget_low_u8(packed));
-                core::ptr::write_unaligned(
+                ptr::write_unaligned(
                     out_ptr.add(8).cast::<u32>(),
                     vgetq_lane_u32::<2>(vreinterpretq_u32_u8(packed)),
                 );
@@ -380,7 +382,7 @@ unsafe fn decode_in_place_neon<const URL_SAFE_ALPHABET: bool>(
                     return (done_16, true);
                 };
                 vst1_u8(out_ptr, vget_low_u8(packed));
-                core::ptr::write_unaligned(
+                ptr::write_unaligned(
                     out_ptr.add(8).cast::<u32>(),
                     vgetq_lane_u32::<2>(vreinterpretq_u32_u8(packed)),
                 );
@@ -434,8 +436,8 @@ unsafe fn decode_chunk_16_neon<const URL_SAFE_ALPHABET: bool>(
     mask_0f: uint8x16_t,
     special_ch: uint8x16_t,
     special_adj: uint8x16_t,
-    dec_shl: core::arch::aarch64::int8x16_t,
-    dec_shr: core::arch::aarch64::int8x16_t,
+    dec_shl: int8x16_t,
+    dec_shr: int8x16_t,
     dec_pack: uint8x16_t,
 ) -> Option<uint8x16_t> {
     // SAFETY: Caller guarantees NEON is enabled.

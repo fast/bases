@@ -18,6 +18,9 @@
 use core::arch::x86 as x86_arch;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64 as x86_arch;
+use core::ptr;
+#[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+use std::arch::is_x86_feature_detected;
 
 use x86_arch::__m128i;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -112,10 +115,10 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) ->
 
 #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
 pub fn encode<const URL_SAFE_ALPHABET: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { encode_avx2::<URL_SAFE_ALPHABET>(input, output) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { encode_ssse3::<URL_SAFE_ALPHABET>(input, output) }
     } else {
@@ -150,10 +153,10 @@ pub fn decode<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
     output: &mut [u8],
 ) -> (usize, usize, bool) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_avx2::<URL_SAFE_ALPHABET>(input, output) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { decode_ssse3::<URL_SAFE_ALPHABET>(input, output) }
     } else {
@@ -192,10 +195,10 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     buf: &mut [u8],
     complete_len: usize,
 ) -> (usize, usize, bool) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_in_place_avx2::<URL_SAFE_ALPHABET>(buf, complete_len) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { decode_in_place_ssse3::<URL_SAFE_ALPHABET>(buf, complete_len) }
     } else {
@@ -493,7 +496,7 @@ unsafe fn store_12_ssse3(out_ptr: *mut u8, res: __m128i) {
     // SAFETY: Caller guarantees `out_ptr` is valid for 12 non-overlapping writes.
     unsafe {
         _mm_storel_epi64(out_ptr.cast(), res);
-        core::ptr::write_unaligned(
+        ptr::write_unaligned(
             out_ptr.add(8).cast::<i32>(),
             _mm_cvtsi128_si32(_mm_srli_si128::<8>(res)),
         );

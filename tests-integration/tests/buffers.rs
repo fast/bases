@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::array;
+
 use bases::Base16Lower;
 use bases::Base16Upper;
 use bases::Base32;
@@ -40,7 +42,7 @@ type Base32UpperMixedUnpadded =
 #[test]
 fn decode_array_handles_exact_mismatched_and_malformed_inputs() {
     fn check_exact<C: Codec, const N: usize>() {
-        let input: [u8; N] = core::array::from_fn(|idx| (idx * 31 + 5) as u8);
+        let input: [u8; N] = array::from_fn(|idx| (idx * 31 + 5) as u8);
         let encoded = C::encode(&input);
         let decoded: [u8; N] = C::decode_array(&encoded).unwrap();
         assert_eq!(decoded, input, "profile {}", C::name());

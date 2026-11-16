@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::path::Path;
-use std::process::Command as StdCommand;
+use std::process;
 
 use clap::Parser;
 use clap::Subcommand;
@@ -183,10 +183,10 @@ impl CommandLint {
     }
 }
 
-fn find_command(command: &str) -> StdCommand {
+fn find_command(command: &str) -> process::Command {
     match which::which(command) {
         Ok(executable) => {
-            let mut cmd = StdCommand::new(executable);
+            let mut cmd = process::Command::new(executable);
             cmd.current_dir(Path::new(env!("CARGO_WORKSPACE_DIR")));
             cmd
         }
@@ -202,23 +202,23 @@ fn ensure_installed(binary: &str, crate_name: &str) {
     }
 }
 
-fn cargo() -> StdCommand {
+fn cargo() -> process::Command {
     find_command("cargo")
 }
 
-fn run_command(mut cmd: StdCommand) {
+fn run_command(mut cmd: process::Command) {
     println!("{cmd:?}");
     let status = cmd.status().expect("failed to execute process");
     assert!(status.success(), "command failed: {status}");
 }
 
-fn add_test_output_args(cmd: &mut StdCommand, no_capture: bool) {
+fn add_test_output_args(cmd: &mut process::Command, no_capture: bool) {
     if no_capture {
         cmd.args(["--", "--nocapture", "--test-threads=1"]);
     }
 }
 
-fn make_check_cmd(extra_args: &[&str]) -> StdCommand {
+fn make_check_cmd(extra_args: &[&str]) -> process::Command {
     let mut cmd = cargo();
     cmd.env("RUSTFLAGS", "-D warnings");
     cmd.args(["check", "--package", PACKAGE_NAME, "--all-targets"]);
@@ -226,7 +226,7 @@ fn make_check_cmd(extra_args: &[&str]) -> StdCommand {
     cmd
 }
 
-fn make_format_cmd(fix: bool) -> StdCommand {
+fn make_format_cmd(fix: bool) -> process::Command {
     let mut cmd = cargo();
     cmd.args(["+nightly", "fmt", "--all"]);
     if !fix {
@@ -235,7 +235,7 @@ fn make_format_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_clippy_cmd(fix: bool) -> StdCommand {
+fn make_clippy_cmd(fix: bool) -> process::Command {
     let mut cmd = cargo();
     cmd.args([
         "+nightly",
@@ -252,7 +252,7 @@ fn make_clippy_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_hawkeye_cmd(fix: bool) -> StdCommand {
+fn make_hawkeye_cmd(fix: bool) -> process::Command {
     ensure_installed("hawkeye", "hawkeye");
     let mut cmd = find_command("hawkeye");
     if fix {
@@ -263,12 +263,12 @@ fn make_hawkeye_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_typos_cmd() -> StdCommand {
+fn make_typos_cmd() -> process::Command {
     ensure_installed("typos", "typos-cli");
     find_command("typos")
 }
 
-fn make_taplo_cmd(fix: bool) -> StdCommand {
+fn make_taplo_cmd(fix: bool) -> process::Command {
     ensure_installed("taplo", "taplo-cli");
     let mut cmd = find_command("taplo");
     if fix {
@@ -279,7 +279,7 @@ fn make_taplo_cmd(fix: bool) -> StdCommand {
     cmd
 }
 
-fn make_doc_cmd() -> StdCommand {
+fn make_doc_cmd() -> process::Command {
     let mut cmd = cargo();
     cmd.env("RUSTDOCFLAGS", "-D warnings");
     cmd.args([

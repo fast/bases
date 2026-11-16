@@ -18,6 +18,16 @@ use alloc::string::String;
 use alloc::vec;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
+#[cfg(feature = "alloc")]
+use core::mem;
+use core::str;
+#[cfg(feature = "std")]
+use std::io;
+
+#[cfg(feature = "serde")]
+use serde_core::Deserializer;
+#[cfg(feature = "serde")]
+use serde_core::Serializer;
 
 use crate::DecodeError;
 use crate::DecodeSliceError;
@@ -26,6 +36,12 @@ use crate::EncodeError;
 use crate::EncodedDisplay;
 use crate::Encoder;
 use crate::codec::sealed::Profile;
+#[cfg(feature = "std")]
+use crate::io::DecoderReader;
+#[cfg(feature = "std")]
+use crate::io::EncoderWriter;
+#[cfg(feature = "serde")]
+use crate::serde;
 
 /// A named binary-to-text encoding profile.
 ///
@@ -208,8 +224,8 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     #[inline]
-    fn encoder_writer<W: std::io::Write>(writer: W) -> crate::io::EncoderWriter<Self, W> {
-        crate::io::EncoderWriter::new(writer)
+    fn encoder_writer<W: io::Write>(writer: W) -> EncoderWriter<Self, W> {
+        EncoderWriter::new(writer)
     }
 
     /// Wraps `reader` in a decoding reader for this profile.
@@ -217,8 +233,8 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     #[inline]
-    fn decoder_reader<R: std::io::Read>(reader: R) -> crate::io::DecoderReader<Self, R> {
-        crate::io::DecoderReader::new(reader)
+    fn decoder_reader<R: io::Read>(reader: R) -> DecoderReader<Self, R> {
+        DecoderReader::new(reader)
     }
 
     /// Serializes `bytes` as an encoded string with `serde`.
@@ -229,11 +245,11 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[inline]
-    fn serialize<T: ?Sized + AsRef<[u8]>, S: serde_core::Serializer>(
+    fn serialize<T: ?Sized + AsRef<[u8]>, S: Serializer>(
         bytes: &T,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        crate::serde::serialize::<Self, T, S>(bytes, serializer)
+        serde::serialize::<Self, T, S>(bytes, serializer)
     }
 
     /// Deserializes an encoded string into a fixed-size byte array with `serde`.
@@ -245,10 +261,10 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[inline]
-    fn deserialize_array<'de, D: serde_core::Deserializer<'de>, const N: usize>(
+    fn deserialize_array<'de, D: Deserializer<'de>, const N: usize>(
         deserializer: D,
     ) -> Result<[u8; N], D::Error> {
-        crate::serde::deserialize_array::<Self, D, N>(deserializer)
+        serde::deserialize_array::<Self, D, N>(deserializer)
     }
 
     /// Deserializes an encoded string into a byte vector with `serde`.
@@ -260,10 +276,8 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
     #[cfg(all(feature = "serde", feature = "alloc"))]
     #[cfg_attr(docsrs, doc(cfg(all(feature = "serde", feature = "alloc"))))]
     #[inline]
-    fn deserialize<'de, D: serde_core::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<u8>, D::Error> {
-        crate::serde::deserialize::<Self, D>(deserializer)
+    fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        serde::deserialize::<Self, D>(deserializer)
     }
 }
 
@@ -279,7 +293,7 @@ impl<T> Codec for T where T: sealed::Profile + 'static {}
 pub(crate) unsafe fn ascii_to_str_mut(bytes: &mut [u8]) -> &mut str {
     debug_assert!(bytes.is_ascii());
     // SAFETY: Caller guarantees all bytes are ASCII and therefore valid UTF-8.
-    unsafe { core::str::from_utf8_unchecked_mut(bytes) }
+    unsafe { str::from_utf8_unchecked_mut(bytes) }
 }
 
 /// Converts an ASCII byte vector to `String` without re-validating UTF-8.
@@ -324,7 +338,7 @@ fn append_encoded_ascii<C: Codec>(input: &[u8], buf: &mut String, start: usize, 
     let written = C::Profile::encode_impl(input, &mut guard.vec[start..new_len]);
     debug_assert_eq!(written, required);
     debug_assert!(guard.vec[start..new_len].is_ascii());
-    core::mem::forget(guard);
+    mem::forget(guard);
 }
 
 #[allow(unsafe_code)]

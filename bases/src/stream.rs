@@ -20,6 +20,7 @@ use crate::DecodeError;
 use crate::DecodeSliceError;
 use crate::EncodeError;
 use crate::FinishError;
+use crate::codec;
 use crate::codec::sealed::Profile;
 
 const MAX_INPUT_QUANTUM: usize = 5;
@@ -172,7 +173,7 @@ impl<C: Codec> Encoder<C> {
         debug_assert_eq!(output_index, required);
         #[allow(unsafe_code)]
         // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..output_index]`.
-        Ok(unsafe { crate::codec::ascii_to_str_mut(&mut output[..output_index]) })
+        Ok(unsafe { codec::ascii_to_str_mut(&mut output[..output_index]) })
     }
 
     /// Finishes the stream, returning the final encoded prefix of `output`.

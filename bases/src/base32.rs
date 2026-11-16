@@ -22,6 +22,13 @@ use core::fmt;
 use core::hash::Hash;
 use core::hash::Hasher;
 use core::marker::PhantomData;
+#[cfg(feature = "std")]
+use std::io;
+
+#[cfg(feature = "serde")]
+use serde_core::Deserializer;
+#[cfg(feature = "serde")]
+use serde_core::Serializer;
 
 use crate::DecodeError;
 use crate::DecodeSliceError;
@@ -32,10 +39,16 @@ use crate::Encoder;
 use crate::backend;
 use crate::codec;
 use crate::codec::sealed::Profile;
+#[cfg(feature = "std")]
+use crate::io::DecoderReader;
+#[cfg(feature = "std")]
+use crate::io::EncoderWriter;
 use crate::policy;
 use crate::policy::sealed::DecodeCasePolicy;
 use crate::policy::sealed::LetterCase;
 use crate::policy::sealed::PaddingPolicy;
+#[cfg(feature = "serde")]
+use crate::serde;
 
 /// The RFC 4648 standard Base32 alphabet (`A-Z`, `2-7`).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -309,8 +322,8 @@ where
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     #[inline]
-    pub fn encoder_writer<W: std::io::Write>(writer: W) -> crate::io::EncoderWriter<Self, W> {
-        crate::io::EncoderWriter::new(writer)
+    pub fn encoder_writer<W: io::Write>(writer: W) -> EncoderWriter<Self, W> {
+        EncoderWriter::new(writer)
     }
 
     /// Wraps `reader` in a decoding reader for this profile.
@@ -318,8 +331,8 @@ where
     #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
     #[must_use]
     #[inline]
-    pub fn decoder_reader<R: std::io::Read>(reader: R) -> crate::io::DecoderReader<Self, R> {
-        crate::io::DecoderReader::new(reader)
+    pub fn decoder_reader<R: io::Read>(reader: R) -> DecoderReader<Self, R> {
+        DecoderReader::new(reader)
     }
 
     /// Serializes `bytes` as an encoded string with `serde`.
@@ -330,11 +343,11 @@ where
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[inline]
-    pub fn serialize<T: ?Sized + AsRef<[u8]>, S: serde_core::Serializer>(
+    pub fn serialize<T: ?Sized + AsRef<[u8]>, S: Serializer>(
         bytes: &T,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        crate::serde::serialize::<Self, T, S>(bytes, serializer)
+        serde::serialize::<Self, T, S>(bytes, serializer)
     }
 
     /// Deserializes an encoded string into a fixed-size byte array with `serde`.
@@ -346,10 +359,10 @@ where
     #[cfg(feature = "serde")]
     #[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
     #[inline]
-    pub fn deserialize_array<'de, D: serde_core::Deserializer<'de>, const N: usize>(
+    pub fn deserialize_array<'de, D: Deserializer<'de>, const N: usize>(
         deserializer: D,
     ) -> Result<[u8; N], D::Error> {
-        crate::serde::deserialize_array::<Self, D, N>(deserializer)
+        serde::deserialize_array::<Self, D, N>(deserializer)
     }
 
     /// Deserializes an encoded string into a byte vector with `serde`.
@@ -361,10 +374,8 @@ where
     #[cfg(all(feature = "serde", feature = "alloc"))]
     #[cfg_attr(docsrs, doc(cfg(all(feature = "serde", feature = "alloc"))))]
     #[inline]
-    pub fn deserialize<'de, D: serde_core::Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Vec<u8>, D::Error> {
-        crate::serde::deserialize::<Self, D>(deserializer)
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        serde::deserialize::<Self, D>(deserializer)
     }
 }
 

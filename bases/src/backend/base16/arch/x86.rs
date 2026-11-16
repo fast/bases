@@ -18,6 +18,8 @@
 use core::arch::x86 as x86_arch;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64 as x86_arch;
+#[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+use std::arch::is_x86_feature_detected;
 
 use x86_arch::__m128i;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -100,10 +102,10 @@ pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize,
 
 #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
 pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [u8]) -> (usize, usize) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { encode_avx2::<UPPERCASE>(input, output) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { encode_ssse3::<UPPERCASE>(input, output) }
     } else {
@@ -136,10 +138,10 @@ pub fn decode<const UPPERCASE: bool, const STRICT_CASE: bool>(
     input: &[u8],
     output: &mut [u8],
 ) -> (usize, usize) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_avx2::<UPPERCASE, STRICT_CASE>(input, output) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { decode_ssse3::<UPPERCASE, STRICT_CASE>(input, output) }
     } else {
@@ -173,10 +175,10 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
 pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     buf: &mut [u8],
 ) -> (usize, usize) {
-    if std::arch::is_x86_feature_detected!("avx2") {
+    if is_x86_feature_detected!("avx2") {
         // SAFETY: Runtime feature detection confirmed AVX2 support.
         unsafe { decode_in_place_avx2::<UPPERCASE, STRICT_CASE>(buf) }
-    } else if std::arch::is_x86_feature_detected!("ssse3") {
+    } else if is_x86_feature_detected!("ssse3") {
         // SAFETY: Runtime feature detection confirmed SSSE3 support.
         unsafe { decode_in_place_ssse3::<UPPERCASE, STRICT_CASE>(buf) }
     } else {

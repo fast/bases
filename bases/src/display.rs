@@ -20,6 +20,8 @@ use core::marker::PhantomData;
 use crate::Base16Lower;
 use crate::Base16Upper;
 use crate::Codec;
+use crate::codec;
+use crate::codec::sealed::Profile;
 
 // Full chunks align with both 3-byte and 5-byte input quanta. Base16 determines
 // the worst-case output size at twice the input length.
@@ -175,21 +177,19 @@ fn fmt_encoded<C: Codec>(input: &[u8], formatter: &mut fmt::Formatter<'_>) -> fm
 
     if input.len() <= 30 {
         let mut output = [0_u8; 64];
-        let written =
-            <C::Profile as crate::codec::sealed::Profile>::encode_impl(input, &mut output);
+        let written = C::Profile::encode_impl(input, &mut output);
         #[allow(unsafe_code)]
         // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..written]`.
-        let encoded = unsafe { crate::codec::ascii_to_str_mut(&mut output[..written]) };
+        let encoded = unsafe { codec::ascii_to_str_mut(&mut output[..written]) };
         return formatter.write_str(encoded);
     }
 
     let mut output = [0_u8; OUTPUT_CHUNK_LEN];
     for chunk in input.chunks(INPUT_CHUNK_LEN) {
-        let written =
-            <C::Profile as crate::codec::sealed::Profile>::encode_impl(chunk, &mut output);
+        let written = C::Profile::encode_impl(chunk, &mut output);
         #[allow(unsafe_code)]
         // SAFETY: Binary-to-text backends always write ASCII bytes into `output[..written]`.
-        let encoded = unsafe { crate::codec::ascii_to_str_mut(&mut output[..written]) };
+        let encoded = unsafe { codec::ascii_to_str_mut(&mut output[..written]) };
         formatter.write_str(encoded)?;
     }
 

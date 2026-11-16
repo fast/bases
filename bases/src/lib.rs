@@ -136,61 +136,45 @@ pub use self::stream::Decoder;
 pub use self::stream::Encoder;
 
 /// A Base16 profile with lowercase encoded output and case-insensitive decoding.
-pub type Base16Lower = self::base16::Base16<self::policy::Lower, self::policy::Mixed>;
+pub type Base16Lower = base16::Base16<policy::Lower, policy::Mixed>;
 
 /// An RFC 4648 Base16 profile with uppercase encoded output and case-insensitive decoding.
-pub type Base16Upper = self::base16::Base16<self::policy::Upper, self::policy::Mixed>;
+pub type Base16Upper = base16::Base16<policy::Upper, policy::Mixed>;
 
 /// The padded RFC 4648 Base32 profile.
 ///
 /// Encoding uses uppercase letters; decoding rejects lowercase input.
-pub type Base32 = self::base32::Base32<
-    self::base32::Standard,
-    self::policy::Padded,
-    self::policy::Upper,
-    self::policy::Strict,
->;
+pub type Base32 = base32::Base32<base32::Standard, policy::Padded, policy::Upper, policy::Strict>;
 
 /// The unpadded form of [`Base32`].
-pub type Base32Unpadded = self::base32::Base32<
-    self::base32::Standard,
-    self::policy::Unpadded,
-    self::policy::Upper,
-    self::policy::Strict,
->;
+pub type Base32Unpadded =
+    base32::Base32<base32::Standard, policy::Unpadded, policy::Upper, policy::Strict>;
 
 /// The padded RFC 4648 Base32 Extended Hex profile.
 ///
 /// Encoding uses uppercase letters; decoding rejects lowercase input.
-pub type Base32Hex = self::base32::Base32<
-    self::base32::ExtendedHex,
-    self::policy::Padded,
-    self::policy::Upper,
-    self::policy::Strict,
->;
+pub type Base32Hex =
+    base32::Base32<base32::ExtendedHex, policy::Padded, policy::Upper, policy::Strict>;
 
 /// The unpadded form of [`Base32Hex`].
-pub type Base32HexUnpadded = self::base32::Base32<
-    self::base32::ExtendedHex,
-    self::policy::Unpadded,
-    self::policy::Upper,
-    self::policy::Strict,
->;
+pub type Base32HexUnpadded =
+    base32::Base32<base32::ExtendedHex, policy::Unpadded, policy::Upper, policy::Strict>;
 
 /// The padded RFC 4648 Base64 profile.
-pub type Base64 = self::base64::Base64<self::base64::Standard, self::policy::Padded>;
+pub type Base64 = base64::Base64<base64::Standard, policy::Padded>;
 
 /// The unpadded RFC 4648 Base64 profile.
-pub type Base64Unpadded = self::base64::Base64<self::base64::Standard, self::policy::Unpadded>;
+pub type Base64Unpadded = base64::Base64<base64::Standard, policy::Unpadded>;
 
 /// The padded RFC 4648 Base64URL profile.
-pub type Base64Url = self::base64::Base64<self::base64::UrlSafe, self::policy::Padded>;
+pub type Base64Url = base64::Base64<base64::UrlSafe, policy::Padded>;
 
 /// The unpadded RFC 4648 Base64URL profile.
-pub type Base64UrlUnpadded = self::base64::Base64<self::base64::UrlSafe, self::policy::Unpadded>;
+pub type Base64UrlUnpadded = base64::Base64<base64::UrlSafe, policy::Unpadded>;
 
 #[cfg(test)]
 mod tests {
+    use core::fmt;
     use core::fmt::Write;
 
     use crate::Base16Lower;
@@ -270,7 +254,7 @@ mod tests {
     fn hex_display_formats_lower_and_upper_only() {
         struct Buf([u8; 16], usize);
         impl Write for Buf {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            fn write_str(&mut self, s: &str) -> fmt::Result {
                 self.0[self.1..self.1 + s.len()].copy_from_slice(s.as_bytes());
                 self.1 += s.len();
                 Ok(())
