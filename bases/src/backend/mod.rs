@@ -35,12 +35,12 @@ pub struct DecodePlan {
 }
 
 #[inline(always)]
-pub(crate) fn write_bytes<const N: usize>(dst: &mut [MaybeUninit<u8>], src: [u8; N]) {
+pub fn write_bytes<const N: usize>(dst: &mut [MaybeUninit<u8>], src: [u8; N]) {
     dst[..N].copy_from_slice(&src.map(MaybeUninit::new));
 }
 
 #[inline]
-pub(crate) fn invalid_byte_error(byte: u8, index: usize) -> DecodeError {
+pub fn invalid_byte_error(byte: u8, index: usize) -> DecodeError {
     if byte == b'=' {
         DecodeError::InvalidPadding { index }
     } else {
@@ -49,6 +49,6 @@ pub(crate) fn invalid_byte_error(byte: u8, index: usize) -> DecodeError {
 }
 
 #[inline]
-pub(crate) fn trailing_padding(input: &[u8]) -> usize {
+pub fn trailing_padding(input: &[u8]) -> usize {
     input.iter().rev().take_while(|byte| **byte == b'=').count()
 }

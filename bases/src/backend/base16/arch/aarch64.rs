@@ -40,8 +40,8 @@ use core::arch::aarch64::vzip1q_u8;
 use core::arch::aarch64::vzip2q_u8;
 use core::mem::MaybeUninit;
 
-const UPPER_HEX: [u8; 16] = *b"0123456789ABCDEF";
-const LOWER_HEX: [u8; 16] = *b"0123456789abcdef";
+use crate::backend::base16::LOWER_HEX;
+use crate::backend::base16::UPPER_HEX;
 
 const HI_MASK_MIXED: [u8; 16] = [0, 0, 0, 1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 const HI_MASK_UPPER: [u8; 16] = [0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -116,8 +116,8 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
 
 /// # Safety
 ///
-/// Caller must ensure `in_ptr` is valid for `chunks * 16` reads and `out_ptr` is valid for
-/// `chunks * 32` non-overlapping writes, with NEON enabled.
+/// Caller must ensure `in_ptr` is valid for `len` reads (a multiple of 8) and `out_ptr` is valid
+/// for `len * 2` non-overlapping writes, with NEON enabled.
 #[inline]
 #[target_feature(enable = "neon")]
 unsafe fn encode_neon<const UPPERCASE: bool>(
@@ -125,7 +125,7 @@ unsafe fn encode_neon<const UPPERCASE: bool>(
     mut out_ptr: *mut u8,
     len: usize,
 ) {
-    let table = if UPPERCASE { &UPPER_HEX } else { &LOWER_HEX };
+    let table = if UPPERCASE { UPPER_HEX } else { LOWER_HEX };
     // SAFETY: Caller guarantees `len` readable bytes at `in_ptr`, `len * 2` writable bytes at
     // `out_ptr`, `len` is a multiple of 8, and `table` is a 16-byte static array.
     unsafe {

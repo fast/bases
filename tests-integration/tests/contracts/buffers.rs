@@ -22,9 +22,7 @@ use googletest::prelude::*;
 use crate::payload;
 
 pub fn check<C: Codec>(reference: &Encoding) {
-    for len in (0..=1024).chain([
-        479, 480, 481, 639, 640, 641, 767, 768, 769, 1023, 1024, 1025, 4096,
-    ]) {
+    for len in (0..=1025).chain([4096]) {
         let raw = payload(len);
         let expected = reference.encode(&raw);
         assert_eq!(C::encoded_len(len).unwrap(), expected.len());

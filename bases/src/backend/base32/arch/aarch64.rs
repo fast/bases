@@ -58,10 +58,7 @@ use core::arch::aarch64::vst1q_u8;
 use core::mem::MaybeUninit;
 use core::ptr;
 
-const STANDARD_UPPER: [u8; 32] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-const STANDARD_LOWER: [u8; 32] = *b"abcdefghijklmnopqrstuvwxyz234567";
-const HEX_UPPER: [u8; 32] = *b"0123456789ABCDEFGHIJKLMNOPQRSTUV";
-const HEX_LOWER: [u8; 32] = *b"0123456789abcdefghijklmnopqrstuv";
+use crate::backend::base32::select_alphabet;
 
 const W_SHUF: [u8; 16] = [1, 0, 2, 1, 3, 2, 4, 3, 6, 5, 7, 6, 8, 7, 9, 8];
 const EVEN_SHIFTS: [i16; 8] = [-11, -9, -7, -5, -11, -9, -7, -5];
@@ -82,15 +79,6 @@ const ROLL_HEX: [u8; 16] = [
 ];
 
 const PACK_SHUF: [u8; 16] = [4, 3, 2, 1, 0, 12, 11, 10, 9, 8, 0, 0, 0, 0, 0, 0];
-
-const fn select_alphabet<const EXTENDED_HEX: bool, const UPPERCASE: bool>() -> &'static [u8; 32] {
-    match (EXTENDED_HEX, UPPERCASE) {
-        (false, true) => &STANDARD_UPPER,
-        (false, false) => &STANDARD_LOWER,
-        (true, true) => &HEX_UPPER,
-        (true, false) => &HEX_LOWER,
-    }
-}
 
 const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'static [u8; 16] {
     if !STRICT_CASE {

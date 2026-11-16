@@ -25,7 +25,7 @@ use serde_core::de::Visitor;
 use crate::Codec;
 use crate::codec;
 
-pub(crate) fn serialize<C, T, S>(bytes: &T, serializer: S) -> Result<S::Ok, S::Error>
+pub fn serialize<C, T, S>(bytes: &T, serializer: S) -> Result<S::Ok, S::Error>
 where
     C: Codec,
     T: ?Sized + AsRef<[u8]>,
@@ -34,9 +34,7 @@ where
     serializer.collect_str(&C::display(bytes.as_ref()))
 }
 
-pub(crate) fn deserialize_array<'de, C, D, const N: usize>(
-    deserializer: D,
-) -> Result<[u8; N], D::Error>
+pub fn deserialize_array<'de, C, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>
 where
     C: Codec,
     D: Deserializer<'de>,
@@ -63,7 +61,7 @@ where
 }
 
 #[cfg(feature = "alloc")]
-pub(crate) fn deserialize<'de, C, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+pub fn deserialize<'de, C, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
 where
     C: Codec,
     D: Deserializer<'de>,

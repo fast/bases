@@ -299,7 +299,6 @@ mod tests {
         assert_eq!(appended, "aGVsbG8=");
         assert_eq!(text, "prefix:aGVsbG8=");
 
-        // Exercise multi-chunk encode_append (> 480 bytes).
         let big = vec![0x5a_u8; 1000];
         let mut text2 = String::from("head:");
         let appended2 = Base32::encode_append(&big, &mut text2);

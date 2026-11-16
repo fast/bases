@@ -51,8 +51,8 @@ use core::arch::aarch64::vsubq_u8;
 use core::mem::MaybeUninit;
 use core::ptr;
 
-const STANDARD: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-const URL_SAFE: [u8; 64] = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+use crate::backend::base64::STANDARD;
+use crate::backend::base64::URL_SAFE;
 
 const ENC_SHUF_A: [u8; 16] = [
     0xff, 0, 1, 0xff, 0xff, 3, 4, 0xff, 0xff, 6, 7, 0xff, 0xff, 9, 10, 0xff,
@@ -196,9 +196,9 @@ unsafe fn encode_neon<const URL_SAFE_ALPHABET: bool>(
     mut rem_total_in: usize,
 ) {
     let alpha_ptr = if URL_SAFE_ALPHABET {
-        &URL_SAFE
+        URL_SAFE
     } else {
-        &STANDARD
+        STANDARD
     }
     .as_ptr();
     // SAFETY: Caller guarantees sufficient readable/writable bytes and static tables are valid.

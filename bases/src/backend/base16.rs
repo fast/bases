@@ -23,8 +23,10 @@ use crate::backend::DecodePlan;
 #[allow(unsafe_code)]
 mod arch;
 
-const UPPER_ENCODE_LUT: [u16; 256] = make_encode_lut(b"0123456789ABCDEF");
-const LOWER_ENCODE_LUT: [u16; 256] = make_encode_lut(b"0123456789abcdef");
+const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
+const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
+const UPPER_ENCODE_LUT: [u16; 256] = make_encode_lut(UPPER_HEX);
+const LOWER_ENCODE_LUT: [u16; 256] = make_encode_lut(LOWER_HEX);
 
 const MIXED_DECODE_LUT: [u8; 256] = make_decode_lut(true, true);
 const UPPER_DECODE_LUT: [u8; 256] = make_decode_lut(true, false);
