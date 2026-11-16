@@ -382,8 +382,7 @@ where
         }
     }
 
-    #[cfg_attr(target_arch = "x86_64", inline(always))]
-    #[cfg_attr(not(target_arch = "x86_64"), inline)]
+    #[inline]
     fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
         match (Alphabet::URL_SAFE, Padding::PADDED) {
             (false, false) => backend::base64::encode::<false, false>(input, output),
