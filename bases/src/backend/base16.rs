@@ -90,7 +90,8 @@ pub fn decode_plan(input: &[u8]) -> Result<DecodePlan, DecodeError> {
 }
 
 /// Encodes `input` into `output` using Base16, returning the number of bytes written.
-#[inline]
+#[cfg_attr(target_arch = "x86_64", inline(always))]
+#[cfg_attr(not(target_arch = "x86_64"), inline)]
 pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
     let required = encoded_len(input.len()).expect("encoded length overflow");
     assert!(output.len() >= required, "output buffer too small");

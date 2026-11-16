@@ -350,7 +350,8 @@ where
         backend::base16::decode_plan(input)
     }
 
-    #[inline]
+    #[cfg_attr(target_arch = "x86_64", inline(always))]
+    #[cfg_attr(not(target_arch = "x86_64"), inline)]
     fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
         if Case::UPPERCASE {
             backend::base16::encode::<true>(input, output)

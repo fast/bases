@@ -150,7 +150,8 @@ pub fn decode_plan<const PADDED: bool>(input: &[u8]) -> Result<DecodePlan, Decod
 }
 
 /// Encodes `input` into `output` using Base64, returning the number of bytes written.
-#[inline]
+#[cfg_attr(target_arch = "x86_64", inline(always))]
+#[cfg_attr(not(target_arch = "x86_64"), inline)]
 pub fn encode<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
@@ -342,7 +343,8 @@ fn encode_quantum_3(alphabet: &[u8; 64], w: u32) -> [u8; 4] {
     ]
 }
 
-#[inline]
+#[cfg_attr(target_arch = "x86_64", inline(always))]
+#[cfg_attr(not(target_arch = "x86_64"), inline)]
 fn encode_scalar_from<const URL_SAFE_ALPHABET: bool, const PADDED: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
