@@ -26,6 +26,7 @@ use core::arch::aarch64::vandq_u32;
 use core::arch::aarch64::vdupq_n_u8;
 use core::arch::aarch64::vdupq_n_u16;
 use core::arch::aarch64::vdupq_n_u32;
+use core::arch::aarch64::vdupq_n_u64;
 use core::arch::aarch64::vget_low_u8;
 use core::arch::aarch64::vgetq_lane_u16;
 use core::arch::aarch64::vld1q_s16;
@@ -43,6 +44,7 @@ use core::arch::aarch64::vreinterpretq_u8_u64;
 use core::arch::aarch64::vreinterpretq_u16_u8;
 use core::arch::aarch64::vreinterpretq_u32_u16;
 use core::arch::aarch64::vreinterpretq_u64_u32;
+use core::arch::aarch64::vsetq_lane_u64;
 use core::arch::aarch64::vshlq_n_u16;
 use core::arch::aarch64::vshlq_n_u32;
 use core::arch::aarch64::vshlq_n_u64;
@@ -105,22 +107,19 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
-    if input.len() < 16 {
-        return (0, 0);
-    }
-    let chunks = ((input.len() - 6) / 10).min(output.len() / 16);
+    let chunks = (input.len() / 10).min(output.len() / 16);
     if chunks == 0 {
         return (0, 0);
     }
 
-    // SAFETY: `chunks > 0` implies `input.len() >= (chunks - 1) * 10 + 16`,
-    // `output.len() >= chunks * 16`, `MaybeUninit<u8>` has the same layout as `u8`, and NEON is
-    // baseline on aarch64.
+    // SAFETY: `input.len() >= chunks * 10`, `output.len() >= chunks * 16`,
+    // `MaybeUninit<u8>` has the same layout as `u8`, and NEON is baseline on aarch64.
     unsafe {
         encode_neon::<EXTENDED_HEX, UPPERCASE>(
             input.as_ptr(),
             output.as_mut_ptr().cast::<u8>(),
             chunks,
+            input.len(),
         );
     }
     (chunks * 10, chunks * 16)
@@ -174,7 +173,7 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
 
 /// # Safety
 ///
-/// Caller must ensure `in_ptr` is valid for `(chunks - 1) * 10 + 16` reads (`chunks > 0`) and
+/// Caller must ensure `in_ptr` is valid for `input_len >= chunks * 10` reads (`chunks > 0`) and
 /// `out_ptr` is valid for `chunks * 16` non-overlapping writes, with NEON enabled.
 #[inline]
 #[target_feature(enable = "neon")]
@@ -182,6 +181,7 @@ unsafe fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     mut in_ptr: *const u8,
     mut out_ptr: *mut u8,
     chunks: usize,
+    input_len: usize,
 ) {
     let alpha_ptr = select_alphabet::<EXTENDED_HEX, UPPERCASE>().as_ptr();
     // SAFETY: Caller guarantees sufficient readable/writable bytes and `alpha_ptr` points to 32
@@ -191,21 +191,42 @@ unsafe fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
         let w_shuf = vld1q_u8(W_SHUF.as_ptr());
         let even_shifts: int16x8_t = vld1q_s16(EVEN_SHIFTS.as_ptr());
         let odd_shifts: int16x8_t = vld1q_s16(ODD_SHIFTS.as_ptr());
-        let even_mask = vdupq_n_u16(0x001f);
-        let odd_mask = vdupq_n_u16(0x1f00);
-
-        for _ in 0..chunks {
+        let wide_chunks = ((input_len - 6) / 10).min(chunks);
+        for _ in 0..wide_chunks {
             let raw = vld1q_u8(in_ptr);
-            let w = vreinterpretq_u16_u8(vqtbl1q_u8(raw, w_shuf));
-            let even = vandq_u16(vshlq_u16(w, even_shifts), even_mask);
-            let odd = vandq_u16(vshlq_u16(w, odd_shifts), odd_mask);
-            let indices = vorrq_u8(vreinterpretq_u8_u16(even), vreinterpretq_u8_u16(odd));
-            let ascii = vqtbl2q_u8(alphabet_tbl, indices);
+            let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
             vst1q_u8(out_ptr, ascii);
             in_ptr = in_ptr.add(10);
             out_ptr = out_ptr.add(16);
         }
+        if wide_chunks < chunks {
+            // The last two quanta need only ten readable bytes, even at an allocation boundary.
+            let low = ptr::read_unaligned(in_ptr.cast::<u64>());
+            let high = u64::from(ptr::read_unaligned(in_ptr.add(8).cast::<u16>()));
+            let raw = vreinterpretq_u8_u64(vsetq_lane_u64::<1>(high, vdupq_n_u64(low)));
+            let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
+            vst1q_u8(out_ptr, ascii);
+        }
     }
+}
+
+/// # Safety
+///
+/// Requires NEON target feature.
+#[inline]
+#[target_feature(enable = "neon")]
+unsafe fn encode_chunk_neon(
+    raw: uint8x16_t,
+    alphabet: uint8x16x2_t,
+    shuffle: uint8x16_t,
+    even_shifts: int16x8_t,
+    odd_shifts: int16x8_t,
+) -> uint8x16_t {
+    let words = vreinterpretq_u16_u8(vqtbl1q_u8(raw, shuffle));
+    let even = vandq_u16(vshlq_u16(words, even_shifts), vdupq_n_u16(0x001f));
+    let odd = vandq_u16(vshlq_u16(words, odd_shifts), vdupq_n_u16(0x1f00));
+    let indices = vorrq_u8(vreinterpretq_u8_u16(even), vreinterpretq_u8_u16(odd));
+    vqtbl2q_u8(alphabet, indices)
 }
 
 /// # Safety
