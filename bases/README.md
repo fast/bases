@@ -4,7 +4,7 @@ Fast, strict RFC 4648 Base16, Base32, and Base64 codecs for Rust.
 
 ## Quick start
 
-Add Bases to your application:
+Add `bases` to your application:
 
 ```toml
 [dependencies]
