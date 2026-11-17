@@ -66,13 +66,17 @@ fn encode<C: Codec>(
 
         // Stream sizing accounts for bytes retained from the preceding read.
         let required = encoder.update_output_len(read)?;
-        output.resize(required, 0);
+        if output.len() < required {
+            output.resize(required, 0);
+        }
         let encoded = encoder.update(&input[..read], &mut output)?;
         destination.write_all(encoded.as_bytes())?;
     }
 
     let required = encoder.finish_output_len();
-    output.resize(required, 0);
+    if output.len() < required {
+        output.resize(required, 0);
+    }
     destination.write_all(encoder.finish(&mut output)?.as_bytes())?;
     destination.flush()?;
     Ok(())
@@ -95,14 +99,19 @@ fn decode<C: Codec>(
         };
 
         let available = decoder.max_update_output_len(read);
-        output.resize(available, 0);
+        if output.len() < available {
+            output.resize(available, 0);
+        }
         let decoded = decoder.update(&input[..read], &mut output)?;
         // A later read or finish can still reject the message after a prefix has been written.
         destination.write_all(decoded)?;
     }
 
     // Even with no buffered output, finish is required to validate the final input fragment.
-    output.resize(decoder.finish_output_len()?, 0);
+    let required = decoder.finish_output_len()?;
+    if output.len() < required {
+        output.resize(required, 0);
+    }
     destination.write_all(decoder.finish(&mut output)?)?;
     destination.flush()?;
     Ok(())

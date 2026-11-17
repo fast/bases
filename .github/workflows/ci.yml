@@ -204,16 +204,22 @@ jobs:
         shell: bash
         run: |
           package_files="$(cargo package --package bases --locked --list)"
-          for required in Cargo.lock Cargo.toml README.md LICENSE src/lib.rs; do
+          for required in Cargo.lock Cargo.toml README.md LICENSE src/lib.rs \
+            ARCHITECTURE.md CHANGELOG.md benchmarks/README.md examples/src/*.rs; do
             grep -Fxq "$required" <<< "$package_files" || {
               echo "missing required package file: $required" >&2
               exit 1
             }
           done
-          if grep -Eq '^(benchmarks|examples|tests-integration|xtask|target)/' <<< "$package_files"; then
-            echo "development-only files leaked into the package" >&2
-            exit 1
-          fi
+          while IFS= read -r file; do
+            case "$file" in
+              benchmarks/README.md|examples/src/*.rs) ;;
+              benchmarks/*|examples/*|tests-integration/*|xtask/*|target/*)
+                echo "development-only file leaked into the package: $file" >&2
+                exit 1
+                ;;
+            esac
+          done <<< "$package_files"
 
       - name: Build package
         run: cargo package --package bases --locked
@@ -223,6 +229,10 @@ jobs:
         run: |
           package_dir="$(find target/package -mindepth 1 -maxdepth 1 -type d -name 'bases-*' -print -quit)"
           test -n "$package_dir"
+          for document in README.md ARCHITECTURE.md CHANGELOG.md benchmarks/README.md examples/src/*.rs; do
+            test -f "$package_dir/$document" && test ! -L "$package_dir/$document"
+            cmp "$document" "$package_dir/$document"
+          done
           cargo test --manifest-path "$package_dir/Cargo.toml" --all-features --locked
           cargo test --manifest-path "$package_dir/Cargo.toml" --no-default-features --locked
           cargo test --manifest-path "$package_dir/Cargo.toml" --no-default-features --features alloc,serde --locked
