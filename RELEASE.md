@@ -1,13 +1,13 @@
 # Releasing Bases
 
-Releases are published manually to crates.io. For the first release, check that the crate name is still available and the repository linked in the package metadata is accessible to its intended readers.
+Releases are published manually to crates.io from a clean commit that has passed CI.
 
 ## Prepare
 
 1. Update the version in `bases/Cargo.toml` and refresh `Cargo.lock`.
-2. Move user-visible entries from `Unreleased` in `CHANGELOG.md` into a versioned section.
-3. Run `cargo x lint`, `cargo x check`, `cargo x test`, and `cargo x package`. The package command builds the archive, verifies its contents and documentation, and tests the extracted crate. Use `cargo x package --allow-dirty` to validate uncommitted changes during development.
-4. Run `cargo publish --dry-run --package bases --locked` from the clean release commit to verify the package without uploading it.
+2. Add a versioned section to the [changelog](CHANGELOG.md) for user-visible changes.
+3. Run `cargo x lint`, `cargo x check`, and `cargo x test`.
+4. From the clean release commit, review `cargo package --list --package bases --locked` and run `cargo publish --dry-run --package bases --all-features --locked`. Cargo builds the archive and verifies that the extracted crate compiles without uploading it. Check that the package contains its README, architecture guide, and license, with relative documentation links resolving inside the package.
 
 ## Publish
 

@@ -12,10 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::BTreeSet;
-use std::fs;
 use std::path::Path;
-use std::path::PathBuf;
 use std::process;
 
 use clap::Parser;
@@ -70,7 +67,6 @@ impl Command {
             SubCommand::Build(cmd) => cmd.run(),
             SubCommand::Check(cmd) => cmd.run(),
             SubCommand::Lint(cmd) => cmd.run(),
-            SubCommand::Package(cmd) => cmd.run(),
             SubCommand::Test(cmd) => cmd.run(),
         }
     }
@@ -86,8 +82,6 @@ enum SubCommand {
     Check(CommandCheck),
     #[command(about = "Run workspace quality checks.")]
     Lint(CommandLint),
-    #[command(about = "Build, inspect, and test the bases release package.")]
-    Package(CommandPackage),
     #[command(about = "Run workspace tests.")]
     Test(CommandTest),
 }
@@ -192,138 +186,6 @@ impl CommandLint {
         run_command(make_hawkeye_cmd(self.fix));
         run_command(make_doc_cmd());
     }
-}
-
-#[derive(Parser)]
-struct CommandPackage {
-    #[arg(
-        long,
-        help = "Allow packaging uncommitted changes for local validation."
-    )]
-    allow_dirty: bool,
-}
-
-impl CommandPackage {
-    fn run(self) {
-        let workspace = Path::new(env!("CARGO_WORKSPACE_DIR"));
-        let mut metadata_cmd = cargo();
-        metadata_cmd.args(["metadata", "--format-version", "1", "--no-deps", "--locked"]);
-        let metadata: serde_json::Value = serde_json::from_str(&command_output(metadata_cmd))
-            .expect("Cargo metadata must be valid JSON");
-        let package = metadata["packages"]
-            .as_array()
-            .expect("Cargo metadata must contain packages")
-            .iter()
-            .find(|package| package["name"].as_str() == Some(PACKAGE_NAME))
-            .expect("bases must be a workspace package");
-        let version = package["version"]
-            .as_str()
-            .expect("package version missing");
-        let package_dir = Path::new(
-            metadata["target_directory"]
-                .as_str()
-                .expect("Cargo target directory missing"),
-        )
-        .join("package")
-        .join(format!("{PACKAGE_NAME}-{version}"));
-
-        let mut documents: Vec<PathBuf> = [
-            "README.md",
-            "ARCHITECTURE.md",
-            "CHANGELOG.md",
-            "benchmarks/README.md",
-        ]
-        .into_iter()
-        .map(PathBuf::from)
-        .collect();
-        for entry in fs::read_dir(workspace.join("examples/src")).expect("cannot read examples") {
-            let path = entry.expect("cannot read example entry").path();
-            if path.extension().is_some_and(|extension| extension == "rs") {
-                documents.push(path.strip_prefix(workspace).unwrap().to_path_buf());
-            }
-        }
-        documents.sort();
-
-        let mut list_cmd = cargo();
-        list_cmd.args(["package", "--package", PACKAGE_NAME, "--locked", "--list"]);
-        if self.allow_dirty {
-            list_cmd.arg("--allow-dirty");
-        }
-        let files: BTreeSet<PathBuf> = command_output(list_cmd)
-            .lines()
-            .map(PathBuf::from)
-            .collect();
-        for required in ["Cargo.lock", "Cargo.toml", "LICENSE", "src/lib.rs"] {
-            assert!(
-                files.contains(Path::new(required)),
-                "missing package file: {required}"
-            );
-        }
-        for document in &documents {
-            assert!(
-                files.contains(document),
-                "missing package document: {}",
-                document.display()
-            );
-        }
-        for file in &files {
-            let development_only = [
-                "benchmarks",
-                "examples",
-                "tests-integration",
-                "xtask",
-                "target",
-            ]
-            .iter()
-            .any(|directory| file.starts_with(directory));
-            assert!(
-                !development_only || documents.contains(file),
-                "development-only file in package: {}",
-                file.display()
-            );
-        }
-
-        let mut package_cmd = cargo();
-        package_cmd.args(["package", "--package", PACKAGE_NAME, "--locked"]);
-        if self.allow_dirty {
-            package_cmd.arg("--allow-dirty");
-        }
-        run_command(package_cmd);
-
-        for document in &documents {
-            let path = package_dir.join(document);
-            let metadata = fs::symlink_metadata(&path).expect("cannot inspect packaged document");
-            assert!(
-                metadata.is_file(),
-                "expected a regular file: {}",
-                path.display()
-            );
-            assert!(
-                fs::read(&path).expect("cannot read packaged document")
-                    == fs::read(workspace.join(document)).expect("cannot read source document"),
-                "packaged document differs from its source: {}",
-                document.display()
-            );
-        }
-
-        let mut test_cmd = cargo();
-        test_cmd
-            .arg("test")
-            .arg("--manifest-path")
-            .arg(package_dir.join("Cargo.toml"));
-        test_cmd.args(["--all-features", "--locked"]);
-        run_command(test_cmd);
-    }
-}
-
-fn command_output(mut cmd: process::Command) -> String {
-    println!("{cmd:?}");
-    let output = cmd
-        .stderr(process::Stdio::inherit())
-        .output()
-        .expect("failed to execute process");
-    assert!(output.status.success(), "command failed: {}", output.status);
-    String::from_utf8(output.stdout).expect("command output must be UTF-8")
 }
 
 fn find_command(command: &str) -> process::Command {

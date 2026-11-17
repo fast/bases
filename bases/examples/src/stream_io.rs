@@ -1,1 +1,0 @@
-../../../examples/src/stream_io.rs

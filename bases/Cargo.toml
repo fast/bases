@@ -15,6 +15,7 @@
 [package]
 description = "Fast, strict RFC 4648 Base16, Base32, and Base64 codecs for Rust."
 name = "bases"
+readme = "README.md"
 version = "0.1.1"
 
 categories = ["encoding", "no-std"]
@@ -22,7 +23,6 @@ documentation = "https://docs.rs/bases"
 edition.workspace = true
 keywords = ["base16", "base32", "base64", "encoding", "no-std"]
 license.workspace = true
-readme.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
