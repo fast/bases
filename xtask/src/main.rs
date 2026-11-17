@@ -78,7 +78,7 @@ enum SubCommand {
     Bench(CommandBench),
     #[command(about = "Compile workspace packages.")]
     Build(CommandBuild),
-    #[command(about = "Check bases under its feature configurations.")]
+    #[command(about = "Check Bases under its feature configurations.")]
     Check(CommandCheck),
     #[command(about = "Run workspace quality checks.")]
     Lint(CommandLint),

@@ -1,4 +1,4 @@
-# bases
+# Bases
 
 Fast, strict RFC 4648 Base16, Base32, and Base64 codecs for Rust.
 
@@ -76,9 +76,9 @@ Decoders reject whitespace, bytes outside the selected alphabet, misplaced or fo
 
 Base encoding is not encryption. Bases does not provide constant-time guarantees and uses data-dependent branches, table lookups, and private scalar or SIMD backends. The [architecture guide](ARCHITECTURE.md) describes backend dispatch and performance contracts.
 
-## Minimum Rust version policy
+## Supported Rust Versions (MSRV 1.88.0)
 
-The minimum supported Rust version is 1.88.0. It may be increased in a minor release, but not in a patch release.
+Bases is built against the latest stable release. The minimum supported version is 1.88.0. The current Bases version is not guaranteed to build on Rust versions earlier than the minimum supported version.
 
 ## License
 

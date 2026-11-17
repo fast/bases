@@ -81,7 +81,7 @@ struct Options {
     /// Number of timing samples per implementation.
     #[arg(long, default_value = "5")]
     repeat: NonZeroUsize,
-    /// Run only bases, for instance when sizing a new workload.
+    /// Run only Bases, for instance when sizing a new workload.
     #[arg(long)]
     baseline_only: bool,
     /// Print every sample in measurement order.

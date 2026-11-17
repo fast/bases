@@ -1,4 +1,4 @@
-# bases
+# Bases
 
 [![Crates.io][crates-badge]][crates-url]
 [![Documentation][docs-badge]][docs-url]
@@ -56,9 +56,9 @@ cargo x lint
 
 Use `cargo x bench` for performance comparisons and see the [benchmark guide](benchmarks/README.md) for workloads and measurement limits. See [Releasing Bases](RELEASE.md) for release validation and publication.
 
-## Minimum Rust version policy
+## Supported Rust Versions (MSRV 1.88.0)
 
-The minimum supported Rust version is 1.88.0. It may be increased in a minor release, but not in a patch release.
+Bases is built against the latest stable release. The minimum supported version is 1.88.0. The current Bases version is not guaranteed to build on Rust versions earlier than the minimum supported version.
 
 ## License
 
