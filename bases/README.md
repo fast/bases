@@ -76,9 +76,11 @@ Decoders reject whitespace, bytes outside the selected alphabet, misplaced or fo
 
 Base encoding is not encryption. Bases does not provide constant-time guarantees and uses data-dependent branches, table lookups, and private scalar or SIMD backends. The [architecture guide](ARCHITECTURE.md) describes backend dispatch and performance contracts.
 
-## Supported Rust Versions (MSRV 1.88.0)
+## Minimum Supported Rust Version (MSRV)
 
-Bases is built against the latest stable release. The minimum supported version is 1.88.0. The current Bases version is not guaranteed to build on Rust versions earlier than the minimum supported version.
+This crate is built against the latest stable release, and its minimum supported rustc version is 1.88.0.
+
+The policy is that the minimum Rust version required to use this crate can be increased in minor version updates. For example, if Bases 1.0 requires Rust 1.20.0, then Bases 1.0.z for all values of z will also require Rust 1.20.0 or newer. However, Bases 1.y for y > 0 may require a newer minimum version of Rust.
 
 ## License
 
