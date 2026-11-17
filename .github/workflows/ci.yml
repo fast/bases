@@ -227,8 +227,9 @@ jobs:
       - name: Test package
         shell: bash
         run: |
-          package_dir="$(find target/package -mindepth 1 -maxdepth 1 -type d -name 'bases-*' -print -quit)"
-          test -n "$package_dir"
+          package_dir="$(cargo metadata --format-version 1 --no-deps --locked |
+            jq -er '.target_directory as $target | .packages[] | select(.name == "bases") | "\($target)/package/\(.name)-\(.version)"')"
+          test -d "$package_dir"
           for document in README.md ARCHITECTURE.md CHANGELOG.md benchmarks/README.md examples/src/*.rs; do
             test -f "$package_dir/$document" && test ! -L "$package_dir/$document"
             cmp "$document" "$package_dir/$document"
