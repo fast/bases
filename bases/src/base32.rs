@@ -47,6 +47,7 @@ use crate::io::DecoderReader;
 use crate::io::EncoderWriter;
 use crate::policy;
 use crate::policy::sealed::DecodeCasePolicy;
+use crate::policy::sealed::DecodePadding;
 use crate::policy::sealed::LetterCase;
 use crate::policy::sealed::PaddingPolicy;
 use crate::policy::sealed::profile_name;
@@ -167,7 +168,7 @@ where
     /// that a buffer of that size can be allocated.
     #[inline]
     pub const fn encoded_len(input_len: usize) -> Result<usize, EncodeError> {
-        let len = if Padding::EMIT_PADDING {
+        let len = if Padding::ENCODE_PADDED {
             backend::base32::encoded_len::<true>(input_len)
         } else {
             backend::base32::encoded_len::<false>(input_len)
@@ -402,11 +403,11 @@ where
     const NAME: &'static str = Self::name();
     const INPUT_QUANTUM: usize = 5;
     const ENCODED_QUANTUM: usize = 8;
-    const ACCEPTS_PADDING: bool = Padding::ACCEPTS_PADDING;
+    const DECODE_PADDING: DecodePadding = Padding::DECODE_PADDING;
 
     #[inline]
     fn encoded_len_impl(input_len: usize) -> Option<usize> {
-        if Padding::EMIT_PADDING {
+        if Padding::ENCODE_PADDED {
             backend::base32::encoded_len::<true>(input_len)
         } else {
             backend::base32::encoded_len::<false>(input_len)
@@ -420,7 +421,7 @@ where
 
     #[inline]
     fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
-        if Padding::decode_padded(input) {
+        if Padding::DECODE_PADDING.uses_padded_decoder(input) {
             backend::base32::decode_plan::<true>(input)
         } else {
             backend::base32::decode_plan::<false>(input)
@@ -431,7 +432,7 @@ where
     fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
         match (
             Alphabet::EXTENDED_HEX,
-            Padding::EMIT_PADDING,
+            Padding::ENCODE_PADDED,
             Case::UPPERCASE,
         ) {
             (false, false, false) => backend::base32::encode::<false, false, false>(input, output),
@@ -526,7 +527,7 @@ where
     fn decode_in_place_impl(buf: &mut [u8]) -> Result<usize, DecodeError> {
         match (
             Alphabet::EXTENDED_HEX,
-            Padding::decode_padded(buf),
+            Padding::DECODE_PADDING.uses_padded_decoder(buf),
             Case::UPPERCASE,
             DecodeCase::STRICT,
         ) {

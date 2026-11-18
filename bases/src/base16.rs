@@ -47,6 +47,7 @@ use crate::io::DecoderReader;
 use crate::io::EncoderWriter;
 use crate::policy;
 use crate::policy::sealed::DecodeCasePolicy;
+use crate::policy::sealed::DecodePadding;
 use crate::policy::sealed::LetterCase;
 #[cfg(feature = "serde")]
 use crate::serde;
@@ -355,7 +356,7 @@ where
     const NAME: &'static str = Self::name();
     const INPUT_QUANTUM: usize = 1;
     const ENCODED_QUANTUM: usize = 2;
-    const ACCEPTS_PADDING: bool = false;
+    const DECODE_PADDING: DecodePadding = DecodePadding::Forbidden;
 
     #[inline]
     fn encoded_len_impl(input_len: usize) -> Option<usize> {

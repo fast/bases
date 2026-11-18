@@ -591,6 +591,7 @@ pub(crate) mod sealed {
 
     use crate::DecodeError;
     use crate::backend::DecodePlan;
+    use crate::policy::sealed::DecodePadding;
 
     /// A direct `Codec: Profile` bound would let downstream generic code skip
     /// padding and output-capacity checks:
@@ -619,7 +620,7 @@ pub(crate) mod sealed {
         const NAME: &'static str;
         const INPUT_QUANTUM: usize;
         const ENCODED_QUANTUM: usize;
-        const ACCEPTS_PADDING: bool;
+        const DECODE_PADDING: DecodePadding;
 
         fn encoded_len_impl(input_len: usize) -> Option<usize>;
         fn max_decoded_len_impl(input_len: usize) -> usize;

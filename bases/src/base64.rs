@@ -46,6 +46,7 @@ use crate::io::DecoderReader;
 #[cfg(feature = "std")]
 use crate::io::EncoderWriter;
 use crate::policy;
+use crate::policy::sealed::DecodePadding;
 use crate::policy::sealed::PaddingPolicy;
 use crate::policy::sealed::profile_name;
 #[cfg(feature = "serde")]
@@ -147,7 +148,7 @@ where
     /// that a buffer of that size can be allocated.
     #[inline]
     pub const fn encoded_len(input_len: usize) -> Result<usize, EncodeError> {
-        let len = if Padding::EMIT_PADDING {
+        let len = if Padding::ENCODE_PADDED {
             backend::base64::encoded_len::<true>(input_len)
         } else {
             backend::base64::encoded_len::<false>(input_len)
@@ -380,11 +381,11 @@ where
     const NAME: &'static str = Self::name();
     const INPUT_QUANTUM: usize = 3;
     const ENCODED_QUANTUM: usize = 4;
-    const ACCEPTS_PADDING: bool = Padding::ACCEPTS_PADDING;
+    const DECODE_PADDING: DecodePadding = Padding::DECODE_PADDING;
 
     #[inline]
     fn encoded_len_impl(input_len: usize) -> Option<usize> {
-        if Padding::EMIT_PADDING {
+        if Padding::ENCODE_PADDED {
             backend::base64::encoded_len::<true>(input_len)
         } else {
             backend::base64::encoded_len::<false>(input_len)
@@ -398,7 +399,7 @@ where
 
     #[inline]
     fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
-        if Padding::decode_padded(input) {
+        if Padding::DECODE_PADDING.uses_padded_decoder(input) {
             backend::base64::decode_plan::<true>(input)
         } else {
             backend::base64::decode_plan::<false>(input)
@@ -407,7 +408,7 @@ where
 
     #[inline]
     fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
-        match (Alphabet::URL_SAFE, Padding::EMIT_PADDING) {
+        match (Alphabet::URL_SAFE, Padding::ENCODE_PADDED) {
             (false, false) => backend::base64::encode::<false, false>(input, output),
             (false, true) => backend::base64::encode::<false, true>(input, output),
             (true, false) => backend::base64::encode::<true, false>(input, output),
@@ -451,7 +452,10 @@ where
 
     #[inline]
     fn decode_in_place_impl(buf: &mut [u8]) -> Result<usize, DecodeError> {
-        match (Alphabet::URL_SAFE, Padding::decode_padded(buf)) {
+        match (
+            Alphabet::URL_SAFE,
+            Padding::DECODE_PADDING.uses_padded_decoder(buf),
+        ) {
             (false, false) => backend::base64::decode_in_place::<false, false>(buf),
             (false, true) => backend::base64::decode_in_place::<false, true>(buf),
             (true, false) => backend::base64::decode_in_place::<true, false>(buf),

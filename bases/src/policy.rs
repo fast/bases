@@ -36,6 +36,8 @@
 //! assert!(Unpadded::decode_array::<1>("Zg=").is_err());
 //! ```
 
+use crate::policy::sealed::DecodePadding;
+
 /// Padding policy that requires and emits canonical `=` padding.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Padded;
@@ -75,23 +77,23 @@ pub struct Mixed;
 pub struct Strict;
 
 impl sealed::PaddingPolicy for Padded {
-    const EMIT_PADDING: bool = true;
-    const DECODE_PADDING_OPTIONAL: bool = false;
+    const ENCODE_PADDED: bool = true;
+    const DECODE_PADDING: DecodePadding = DecodePadding::Required;
 }
 
 impl sealed::PaddingPolicy for Unpadded {
-    const EMIT_PADDING: bool = false;
-    const DECODE_PADDING_OPTIONAL: bool = false;
+    const ENCODE_PADDED: bool = false;
+    const DECODE_PADDING: DecodePadding = DecodePadding::Forbidden;
 }
 
 impl sealed::PaddingPolicy for PaddedOptional {
-    const EMIT_PADDING: bool = true;
-    const DECODE_PADDING_OPTIONAL: bool = true;
+    const ENCODE_PADDED: bool = true;
+    const DECODE_PADDING: DecodePadding = DecodePadding::Optional;
 }
 
 impl sealed::PaddingPolicy for UnpaddedOptional {
-    const EMIT_PADDING: bool = false;
-    const DECODE_PADDING_OPTIONAL: bool = true;
+    const ENCODE_PADDED: bool = false;
+    const DECODE_PADDING: DecodePadding = DecodePadding::Optional;
 }
 
 impl sealed::LetterCase for Lower {
@@ -111,33 +113,41 @@ impl sealed::DecodeCasePolicy for Strict {
 }
 
 pub(crate) mod sealed {
-    pub trait PaddingPolicy: 'static {
-        const EMIT_PADDING: bool;
-        const DECODE_PADDING_OPTIONAL: bool;
-        const ACCEPTS_PADDING: bool = Self::EMIT_PADDING || Self::DECODE_PADDING_OPTIONAL;
+    #[derive(Clone, Copy)]
+    pub enum DecodePadding {
+        Required,
+        Forbidden,
+        Optional,
+    }
 
+    impl DecodePadding {
         #[inline]
-        fn decode_padded(input: &[u8]) -> bool {
-            if Self::DECODE_PADDING_OPTIONAL {
-                input.last() == Some(&b'=')
-            } else {
-                Self::EMIT_PADDING
+        pub fn uses_padded_decoder(self, input: &[u8]) -> bool {
+            match self {
+                Self::Required => true,
+                Self::Forbidden => false,
+                Self::Optional => input.last() == Some(&b'='),
             }
         }
     }
 
+    pub trait PaddingPolicy: 'static {
+        const ENCODE_PADDED: bool;
+        const DECODE_PADDING: DecodePadding;
+    }
+
     macro_rules! profile_name {
-        ($base:literal, $padding:ty) => {
-            match (
-                <$padding>::EMIT_PADDING,
-                <$padding>::DECODE_PADDING_OPTIONAL,
-            ) {
-                (true, false) => $base,
-                (false, false) => concat!($base, "-unpadded"),
-                (true, true) => concat!($base, "-padded-optional"),
-                (false, true) => concat!($base, "-unpadded-optional"),
+        ($base:literal, $padding:ty) => {{
+            use $crate::policy::sealed::DecodePadding;
+            match <$padding>::DECODE_PADDING {
+                DecodePadding::Required => $base,
+                DecodePadding::Forbidden => concat!($base, "-unpadded"),
+                DecodePadding::Optional if <$padding>::ENCODE_PADDED => {
+                    concat!($base, "-padded-optional")
+                }
+                DecodePadding::Optional => concat!($base, "-unpadded-optional"),
             }
-        };
+        }};
     }
     pub(crate) use profile_name;
 

@@ -23,6 +23,7 @@ use crate::FinishError;
 use crate::backend::DecodePlan;
 use crate::codec;
 use crate::codec::sealed::Profile;
+use crate::policy::sealed::DecodePadding;
 
 const MAX_INPUT_QUANTUM: usize = 5;
 const MAX_ENCODED_QUANTUM: usize = 8;
@@ -349,15 +350,14 @@ impl<C: Codec> Decoder<C> {
         let process_len = combined_len / encoded_quantum * encoded_quantum;
         let pending_offset = self.pending_offset();
 
-        let (padding, padding_reduction, padding_index) = if C::Profile::ACCEPTS_PADDING {
-            analyze_padding::<C>(
+        let (padding, padding_reduction, padding_index) = match C::Profile::DECODE_PADDING {
+            DecodePadding::Forbidden => (0, 0, None),
+            DecodePadding::Required | DecodePadding::Optional => analyze_padding::<C>(
                 &self.pending[..self.pending_len],
                 input,
                 process_len,
                 pending_offset,
-            )?
-        } else {
-            (0, 0, None)
+            )?,
         };
 
         let input_quantum = C::Profile::INPUT_QUANTUM;
