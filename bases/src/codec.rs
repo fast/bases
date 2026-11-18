@@ -107,8 +107,25 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
         encode_into::<Self>(input, output)
     }
 
-    /// Encodes into uninitialized storage, returning only the initialized ASCII prefix.
-    /// Existing initialized slots stay initialized, including on error; values may change.
+    /// Encodes into possibly uninitialized storage and returns the initialized ASCII prefix.
+    ///
+    /// Previously initialized slots stay initialized on success and error. Their values may change.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same length and capacity errors as [`encode_into`](Self::encode_into).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use core::mem::MaybeUninit;
+    ///
+    /// use bases::Base64;
+    ///
+    /// let mut output = [MaybeUninit::uninit(); 8];
+    /// let text = Base64::encode_into_uninit(b"foo", &mut output).unwrap();
+    /// assert_eq!(text, "Zm9v");
+    /// ```
     #[inline]
     fn encode_into_uninit<'output>(
         input: &[u8],
@@ -137,9 +154,33 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
         decode_into::<Self>(input.as_ref(), output)
     }
 
-    /// Decodes into uninitialized storage, returning only the initialized prefix.
-    /// Errors may leave partial writes but return no slice; initialized slots stay initialized.
-    /// Container lengths are unchanged; capacity errors do not guarantee input validity.
+    /// Decodes `input` into possibly uninitialized storage and returns the initialized prefix.
+    ///
+    /// An error may leave partial writes and gives no initialized length. Previously initialized
+    /// slots remain initialized, but their values may change.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same decoding and capacity errors as [`decode_into`](Self::decode_into).
+    /// An undersized buffer can be reported before the entire input has been validated.
+    ///
+    /// # Examples
+    ///
+    /// Writing into a vector's spare capacity leaves its length unchanged. Use the returned
+    /// slice's length to include the decoded bytes in the vector.
+    ///
+    /// ```
+    /// use bases::Base64;
+    ///
+    /// let mut bytes = Vec::with_capacity(8);
+    /// bytes.extend_from_slice(b"id:");
+    /// let start = bytes.len();
+    /// let written = Base64::decode_into_uninit("Zg==", bytes.spare_capacity_mut())?.len();
+    /// // SAFETY: The successful decode initialized the next `written` bytes of spare capacity.
+    /// unsafe { bytes.set_len(start + written) };
+    /// assert_eq!(bytes.as_slice(), b"id:f");
+    /// # Ok::<(), bases::DecodeSliceError>(())
+    /// ```
     #[inline]
     fn decode_into_uninit(
         input: impl AsRef<[u8]>,
@@ -570,6 +611,10 @@ pub(crate) mod sealed {
 
     /// Quanta must satisfy `0 < INPUT_QUANTUM < ENCODED_QUANTUM` and fit the
     /// stream buffers; sizing and buffering rely on these bounds.
+    ///
+    /// Output methods must initialize the full reported prefix on success, using ASCII bytes
+    /// for encoding. Every write must preserve initialization of previously initialized slots,
+    /// including when decoding returns an error.
     pub trait Profile {
         const NAME: &'static str;
         const INPUT_QUANTUM: usize;

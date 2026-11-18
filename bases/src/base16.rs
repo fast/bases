@@ -158,7 +158,9 @@ where
         codec::encode_into::<Self>(input, output)
     }
 
-    /// See [`Codec::encode_into_uninit`](crate::Codec::encode_into_uninit).
+    /// Encodes into possibly uninitialized storage and returns the initialized ASCII prefix.
+    ///
+    /// See [`Codec::encode_into_uninit`](crate::Codec::encode_into_uninit) for details.
     #[inline]
     pub fn encode_into_uninit<'output>(
         input: &[u8],
@@ -184,7 +186,9 @@ where
         codec::decode_into::<Self>(input.as_ref(), output)
     }
 
-    /// See [`Codec::decode_into_uninit`](crate::Codec::decode_into_uninit).
+    /// Decodes into possibly uninitialized storage and returns the initialized prefix.
+    ///
+    /// See [`Codec::decode_into_uninit`](crate::Codec::decode_into_uninit) for details.
     #[inline]
     pub fn decode_into_uninit(
         input: impl AsRef<[u8]>,

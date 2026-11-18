@@ -2,6 +2,12 @@
 
 All significant changes to this project will be documented in this file.
 
+## Unreleased
+
+### Features
+
+* Add `encode_into_uninit` and `decode_into_uninit` to all profiles and the `Codec` trait. They write into caller-provided `MaybeUninit<u8>` storage and return the initialized prefix.
+
 ## v0.1.1 (2026-11-17)
 
 ### Improvements

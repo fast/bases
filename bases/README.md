@@ -54,6 +54,23 @@ Every profile exposes inherent methods without requiring trait imports, and impl
 | `std`     | Enables `alloc`, I/O adapters, and runtime x86/x86_64 CPU feature detection.                       |
 | `serde`   | Adds `serde_core` serialization and fixed-array deserialization, including without an allocator.   |
 
+## Uninitialized output buffers
+
+Use `encode_into_uninit` or `decode_into_uninit` when the destination is an uninitialized stack buffer or a vector's spare capacity. Use the returned slice to access the result. For padded Base64, it can be shorter than the decoding size estimate.
+
+```rust
+use core::mem::MaybeUninit;
+
+use bases::Base64;
+
+const WIRE: &[u8] = b"Zg==";
+let mut output = [MaybeUninit::uninit(); Base64::max_decoded_len(WIRE.len())];
+let decoded = Base64::decode_into_uninit(WIRE, &mut output).unwrap();
+assert_eq!(decoded, b"f");
+```
+
+When passing `Vec::spare_capacity_mut()`, the returned slice borrows the new bytes and the vector keeps its original length. To append decoded bytes to a `Vec<u8>` with automatic length management, use `decode_append` with the `alloc` feature. A decoding error may leave partial writes and reports no initialized prefix.
+
 ## Streaming and errors
 
 ```rust
