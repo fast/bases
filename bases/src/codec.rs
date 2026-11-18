@@ -619,7 +619,7 @@ pub(crate) mod sealed {
         const NAME: &'static str;
         const INPUT_QUANTUM: usize;
         const ENCODED_QUANTUM: usize;
-        const PADDED: bool;
+        const ACCEPTS_PADDING: bool;
 
         fn encoded_len_impl(input_len: usize) -> Option<usize>;
         fn max_decoded_len_impl(input_len: usize) -> usize;

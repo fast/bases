@@ -25,8 +25,10 @@ mod serialization;
 #[path = "contracts/streaming.rs"]
 mod streaming;
 
+use bases::Codec;
 use bases::base16;
 use bases::base32;
+use bases::base64;
 use bases::policy;
 use data_encoding::Encoding;
 use data_encoding::Specification;
@@ -58,6 +60,52 @@ fn payload(len: usize) -> Vec<u8> {
             (state >> 24) as u8
         })
         .collect()
+}
+
+#[test]
+fn optional_padding_accepts_only_canonical_tail_lengths() {
+    fn check<C: Codec>(reference: &Encoding) {
+        for len in 0..=10 {
+            let raw = payload(len);
+            let padded = reference.encode(&raw);
+            let bare = padded.trim_end_matches('=');
+            assert_eq!(C::encode(&raw), bare);
+
+            let required = padded.len() - bare.len();
+            for count in 0..=required + 1 {
+                let wire = format!("{bare}{}", "=".repeat(count));
+                let expected = (count == 0 || count == required).then_some(raw.as_slice());
+                let mut out = vec![0; C::max_decoded_len(wire.len())];
+                assert_eq!(
+                    C::decode_into(&wire, &mut out).ok().as_deref(),
+                    expected,
+                    "{wire}"
+                );
+                let mut in_place = wire.as_bytes().to_vec();
+                assert_eq!(
+                    C::decode_in_place(&mut in_place).ok().as_deref(),
+                    expected,
+                    "{wire}"
+                );
+                for chunk in 1..=wire.len().max(1) {
+                    assert_eq!(
+                        streaming::decode::<C>(wire.as_bytes(), chunk)
+                            .ok()
+                            .as_deref(),
+                        expected,
+                        "{wire}, chunk {chunk}"
+                    );
+                }
+            }
+        }
+    }
+
+    check::<base64::Base64<base64::Standard, policy::OptionalPadding>>(&data_encoding::BASE64);
+    check::<base64::Base64<base64::UrlSafe, policy::OptionalPadding>>(&data_encoding::BASE64URL);
+    check::<base32::Base32<base32::Standard, policy::OptionalPadding>>(&data_encoding::BASE32);
+    check::<base32::Base32<base32::ExtendedHex, policy::OptionalPadding>>(
+        &data_encoding::BASE32HEX,
+    );
 }
 
 macro_rules! profile {

@@ -46,6 +46,7 @@ use crate::io::DecoderReader;
 #[cfg(feature = "std")]
 use crate::io::EncoderWriter;
 use crate::policy;
+use crate::policy::sealed::PaddingMode;
 use crate::policy::sealed::PaddingPolicy;
 #[cfg(feature = "serde")]
 use crate::serde;
@@ -76,7 +77,8 @@ pub(crate) mod sealed {
 ///
 /// The type parameters select the alphabet (`Alphabet`, defaulting to
 /// [`Standard`]) and padding policy (`Padding`, defaulting to
-/// [`policy::Padded`]).
+/// [`policy::Padded`]). Use [`policy::OptionalPadding`] to emit unpadded text and accept
+/// both canonical padding forms.
 pub struct Base64<Alphabet = Standard, Padding = policy::Padded>(PhantomData<(Alphabet, Padding)>);
 
 impl<Alphabet, Padding> Clone for Base64<Alphabet, Padding> {
@@ -129,11 +131,13 @@ where
     #[must_use]
     #[inline]
     pub const fn name() -> &'static str {
-        match (Alphabet::URL_SAFE, Padding::PADDED) {
-            (false, true) => "base64",
-            (false, false) => "base64-unpadded",
-            (true, true) => "base64url",
-            (true, false) => "base64url-unpadded",
+        match (Alphabet::URL_SAFE, Padding::MODE) {
+            (false, PaddingMode::Required) => "base64",
+            (false, PaddingMode::Forbidden) => "base64-unpadded",
+            (false, PaddingMode::Optional) => "base64-optional-padding",
+            (true, PaddingMode::Required) => "base64url",
+            (true, PaddingMode::Forbidden) => "base64url-unpadded",
+            (true, PaddingMode::Optional) => "base64url-optional-padding",
         }
     }
 
@@ -146,7 +150,7 @@ where
     /// that a buffer of that size can be allocated.
     #[inline]
     pub const fn encoded_len(input_len: usize) -> Result<usize, EncodeError> {
-        let len = if Padding::PADDED {
+        let len = if Padding::EMIT_PADDING {
             backend::base64::encoded_len::<true>(input_len)
         } else {
             backend::base64::encoded_len::<false>(input_len)
@@ -379,11 +383,11 @@ where
     const NAME: &'static str = Self::name();
     const INPUT_QUANTUM: usize = 3;
     const ENCODED_QUANTUM: usize = 4;
-    const PADDED: bool = Padding::PADDED;
+    const ACCEPTS_PADDING: bool = !matches!(Padding::MODE, PaddingMode::Forbidden);
 
     #[inline]
     fn encoded_len_impl(input_len: usize) -> Option<usize> {
-        if Padding::PADDED {
+        if Padding::EMIT_PADDING {
             backend::base64::encoded_len::<true>(input_len)
         } else {
             backend::base64::encoded_len::<false>(input_len)
@@ -397,7 +401,7 @@ where
 
     #[inline]
     fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
-        if Padding::PADDED {
+        if Padding::MODE.decode_padded(input) {
             backend::base64::decode_plan::<true>(input)
         } else {
             backend::base64::decode_plan::<false>(input)
@@ -406,7 +410,7 @@ where
 
     #[inline]
     fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
-        match (Alphabet::URL_SAFE, Padding::PADDED) {
+        match (Alphabet::URL_SAFE, Padding::EMIT_PADDING) {
             (false, false) => backend::base64::encode::<false, false>(input, output),
             (false, true) => backend::base64::encode::<false, true>(input, output),
             (true, false) => backend::base64::encode::<true, false>(input, output),
@@ -450,7 +454,7 @@ where
 
     #[inline]
     fn decode_in_place_impl(buf: &mut [u8]) -> Result<usize, DecodeError> {
-        match (Alphabet::URL_SAFE, Padding::PADDED) {
+        match (Alphabet::URL_SAFE, Padding::MODE.decode_padded(buf)) {
             (false, false) => backend::base64::decode_in_place::<false, false>(buf),
             (false, true) => backend::base64::decode_in_place::<false, true>(buf),
             (true, false) => backend::base64::decode_in_place::<true, false>(buf),

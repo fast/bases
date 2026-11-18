@@ -48,6 +48,7 @@ use crate::io::EncoderWriter;
 use crate::policy;
 use crate::policy::sealed::DecodeCasePolicy;
 use crate::policy::sealed::LetterCase;
+use crate::policy::sealed::PaddingMode;
 use crate::policy::sealed::PaddingPolicy;
 #[cfg(feature = "serde")]
 use crate::serde;
@@ -80,7 +81,8 @@ pub(crate) mod sealed {
 /// [`Standard`]), padding policy (`Padding`, defaulting to
 /// [`policy::Padded`]), encoded letter case (`Case`, defaulting to
 /// [`policy::Upper`]), and decoding case policy (`DecodeCase`, defaulting to
-/// [`policy::Strict`]).
+/// [`policy::Strict`]). Use [`policy::OptionalPadding`] to emit unpadded text and accept
+/// both canonical padding forms.
 pub struct Base32<
     Alphabet = Standard,
     Padding = policy::Padded,
@@ -146,26 +148,34 @@ where
     pub const fn name() -> &'static str {
         match (
             Alphabet::EXTENDED_HEX,
-            Padding::PADDED,
+            Padding::MODE,
             Case::UPPERCASE,
             DecodeCase::STRICT,
         ) {
-            (false, true, true, true) => "base32",
-            (false, false, true, true) => "base32-unpadded",
-            (false, true, false, true) => "base32-lower",
-            (false, false, false, true) => "base32-lower-unpadded",
-            (false, true, true, false) => "base32-mixed",
-            (false, false, true, false) => "base32-mixed-unpadded",
-            (false, true, false, false) => "base32-lower-mixed",
-            (false, false, false, false) => "base32-lower-mixed-unpadded",
-            (true, true, true, true) => "base32hex",
-            (true, false, true, true) => "base32hex-unpadded",
-            (true, true, false, true) => "base32hex-lower",
-            (true, false, false, true) => "base32hex-lower-unpadded",
-            (true, true, true, false) => "base32hex-mixed",
-            (true, false, true, false) => "base32hex-mixed-unpadded",
-            (true, true, false, false) => "base32hex-lower-mixed",
-            (true, false, false, false) => "base32hex-lower-mixed-unpadded",
+            (false, PaddingMode::Required, true, true) => "base32",
+            (false, PaddingMode::Forbidden, true, true) => "base32-unpadded",
+            (false, PaddingMode::Optional, true, true) => "base32-optional-padding",
+            (false, PaddingMode::Required, false, true) => "base32-lower",
+            (false, PaddingMode::Forbidden, false, true) => "base32-lower-unpadded",
+            (false, PaddingMode::Optional, false, true) => "base32-lower-optional-padding",
+            (false, PaddingMode::Required, true, false) => "base32-mixed",
+            (false, PaddingMode::Forbidden, true, false) => "base32-mixed-unpadded",
+            (false, PaddingMode::Optional, true, false) => "base32-mixed-optional-padding",
+            (false, PaddingMode::Required, false, false) => "base32-lower-mixed",
+            (false, PaddingMode::Forbidden, false, false) => "base32-lower-mixed-unpadded",
+            (false, PaddingMode::Optional, false, false) => "base32-lower-mixed-optional-padding",
+            (true, PaddingMode::Required, true, true) => "base32hex",
+            (true, PaddingMode::Forbidden, true, true) => "base32hex-unpadded",
+            (true, PaddingMode::Optional, true, true) => "base32hex-optional-padding",
+            (true, PaddingMode::Required, false, true) => "base32hex-lower",
+            (true, PaddingMode::Forbidden, false, true) => "base32hex-lower-unpadded",
+            (true, PaddingMode::Optional, false, true) => "base32hex-lower-optional-padding",
+            (true, PaddingMode::Required, true, false) => "base32hex-mixed",
+            (true, PaddingMode::Forbidden, true, false) => "base32hex-mixed-unpadded",
+            (true, PaddingMode::Optional, true, false) => "base32hex-mixed-optional-padding",
+            (true, PaddingMode::Required, false, false) => "base32hex-lower-mixed",
+            (true, PaddingMode::Forbidden, false, false) => "base32hex-lower-mixed-unpadded",
+            (true, PaddingMode::Optional, false, false) => "base32hex-lower-mixed-optional-padding",
         }
     }
 
@@ -178,7 +188,7 @@ where
     /// that a buffer of that size can be allocated.
     #[inline]
     pub const fn encoded_len(input_len: usize) -> Result<usize, EncodeError> {
-        let len = if Padding::PADDED {
+        let len = if Padding::EMIT_PADDING {
             backend::base32::encoded_len::<true>(input_len)
         } else {
             backend::base32::encoded_len::<false>(input_len)
@@ -413,11 +423,11 @@ where
     const NAME: &'static str = Self::name();
     const INPUT_QUANTUM: usize = 5;
     const ENCODED_QUANTUM: usize = 8;
-    const PADDED: bool = Padding::PADDED;
+    const ACCEPTS_PADDING: bool = !matches!(Padding::MODE, PaddingMode::Forbidden);
 
     #[inline]
     fn encoded_len_impl(input_len: usize) -> Option<usize> {
-        if Padding::PADDED {
+        if Padding::EMIT_PADDING {
             backend::base32::encoded_len::<true>(input_len)
         } else {
             backend::base32::encoded_len::<false>(input_len)
@@ -431,7 +441,7 @@ where
 
     #[inline]
     fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
-        if Padding::PADDED {
+        if Padding::MODE.decode_padded(input) {
             backend::base32::decode_plan::<true>(input)
         } else {
             backend::base32::decode_plan::<false>(input)
@@ -440,7 +450,11 @@ where
 
     #[inline]
     fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
-        match (Alphabet::EXTENDED_HEX, Padding::PADDED, Case::UPPERCASE) {
+        match (
+            Alphabet::EXTENDED_HEX,
+            Padding::EMIT_PADDING,
+            Case::UPPERCASE,
+        ) {
             (false, false, false) => backend::base32::encode::<false, false, false>(input, output),
             (false, false, true) => backend::base32::encode::<false, false, true>(input, output),
             (false, true, false) => backend::base32::encode::<false, true, false>(input, output),
@@ -533,7 +547,7 @@ where
     fn decode_in_place_impl(buf: &mut [u8]) -> Result<usize, DecodeError> {
         match (
             Alphabet::EXTENDED_HEX,
-            Padding::PADDED,
+            Padding::MODE.decode_padded(buf),
             Case::UPPERCASE,
             DecodeCase::STRICT,
         ) {

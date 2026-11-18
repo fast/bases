@@ -349,7 +349,7 @@ impl<C: Codec> Decoder<C> {
         let process_len = combined_len / encoded_quantum * encoded_quantum;
         let pending_offset = self.pending_offset();
 
-        let (padding, padding_reduction, padding_index) = if C::Profile::PADDED {
+        let (padding, padding_reduction, padding_index) = if C::Profile::ACCEPTS_PADDING {
             analyze_padding::<C>(
                 &self.pending[..self.pending_len],
                 input,
@@ -457,8 +457,8 @@ impl<C: Codec> Decoder<C> {
     /// On error, [`FinishError::into_inner`] recovers the unchanged decoder.
     /// Output contents are unspecified on error.
     ///
-    /// Padded profiles require a complete final quantum; unpadded profiles
-    /// accept the partial lengths defined by their encoding.
+    /// Profiles that require padding need a complete final quantum. Profiles
+    /// that allow padding to be omitted accept canonical unpadded fragments.
     ///
     /// # Errors
     ///

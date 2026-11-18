@@ -14,6 +14,8 @@
 
 //! Policy markers for encoding and decoding profiles.
 
+use crate::policy::sealed::PaddingMode;
+
 /// Padding policy that requires and emits canonical `=` padding.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Padded;
@@ -21,6 +23,25 @@ pub struct Padded;
 /// Padding policy that omits and rejects `=` padding.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Unpadded;
+
+/// Omits padding when encoding and accepts either complete canonical padding or none when decoding.
+///
+/// For example, gRPC binary metadata uses this policy with the standard Base64 alphabet.
+///
+/// ```
+/// use bases::base64;
+/// use bases::policy;
+///
+/// type Metadata = base64::Base64<base64::Standard, policy::OptionalPadding>;
+///
+/// let mut output = [0; 4];
+/// assert_eq!(Metadata::encode_into(b"f", &mut output).unwrap(), "Zg");
+/// assert_eq!(Metadata::decode_array("Zg"), Ok(*b"f"));
+/// assert_eq!(Metadata::decode_array("Zg=="), Ok(*b"f"));
+/// assert!(Metadata::decode_array::<1>("Zg=").is_err());
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct OptionalPadding;
 
 /// Letter case policy that emits lowercase ASCII letters.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -39,11 +60,15 @@ pub struct Mixed;
 pub struct Strict;
 
 impl sealed::PaddingPolicy for Padded {
-    const PADDED: bool = true;
+    const MODE: PaddingMode = PaddingMode::Required;
 }
 
 impl sealed::PaddingPolicy for Unpadded {
-    const PADDED: bool = false;
+    const MODE: PaddingMode = PaddingMode::Forbidden;
+}
+
+impl sealed::PaddingPolicy for OptionalPadding {
+    const MODE: PaddingMode = PaddingMode::Optional;
 }
 
 impl sealed::LetterCase for Lower {
@@ -63,8 +88,27 @@ impl sealed::DecodeCasePolicy for Strict {
 }
 
 pub(crate) mod sealed {
+    #[derive(Clone, Copy)]
+    pub enum PaddingMode {
+        Required,
+        Forbidden,
+        Optional,
+    }
+
+    impl PaddingMode {
+        #[inline]
+        pub fn decode_padded(self, input: &[u8]) -> bool {
+            match self {
+                Self::Required => true,
+                Self::Forbidden => false,
+                Self::Optional => input.last() == Some(&b'='),
+            }
+        }
+    }
+
     pub trait PaddingPolicy: 'static {
-        const PADDED: bool;
+        const MODE: PaddingMode;
+        const EMIT_PADDING: bool = matches!(Self::MODE, PaddingMode::Required);
     }
 
     pub trait LetterCase: 'static {

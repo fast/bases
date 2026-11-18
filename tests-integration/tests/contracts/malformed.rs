@@ -17,11 +17,46 @@ use core::mem::MaybeUninit;
 use bases::Codec;
 use bases::DecodeError;
 use bases::DecodeSliceError;
+use bases::base32;
+use bases::base64;
+use bases::policy;
 use data_encoding::Encoding;
 use googletest::prelude::*;
 
 use crate::payload;
 use crate::streaming;
+
+#[test]
+fn optional_padding_preserves_alphabet_and_trailing_bit_errors() {
+    type Base64 = base64::Base64<base64::Standard, policy::OptionalPadding>;
+    type Base32 = base32::Base32<base32::Standard, policy::OptionalPadding>;
+
+    for wire in [b"Zm9vZh".as_slice(), b"Zm9vZh=="] {
+        assert_error::<Base64>(wire, DecodeError::NonCanonical { index: 5 });
+    }
+    assert_error::<Base64>(
+        b"Z ==",
+        DecodeError::InvalidByte {
+            index: 1,
+            byte: b' ',
+        },
+    );
+    assert_error::<Base64>(b"Zg==AAAA", DecodeError::InvalidPadding { index: 2 });
+    for wire in [b"MZ".as_slice(), b"MZ======"] {
+        assert_error::<Base32>(wire, DecodeError::NonCanonical { index: 1 });
+    }
+    assert_error::<Base32>(
+        b"my======",
+        DecodeError::InvalidByte {
+            index: 0,
+            byte: b'm',
+        },
+    );
+    assert_error::<Base32>(
+        b"MY======AAAAAAAA",
+        DecodeError::InvalidPadding { index: 2 },
+    );
+}
 
 pub fn differential<C: Codec>(reference: &Encoding) {
     let mut output = vec![0; 256];

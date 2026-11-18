@@ -355,7 +355,7 @@ where
     const NAME: &'static str = Self::name();
     const INPUT_QUANTUM: usize = 1;
     const ENCODED_QUANTUM: usize = 2;
-    const PADDED: bool = false;
+    const ACCEPTS_PADDING: bool = false;
 
     #[inline]
     fn encoded_len_impl(input_len: usize) -> Option<usize> {
