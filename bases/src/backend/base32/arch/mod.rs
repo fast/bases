@@ -14,12 +14,9 @@
 
 //! Base32 backend dispatch.
 //!
-//! `encode` and `decode` return consumed input and written output byte counts. `None` means no
-//! SIMD backend was selected and permits the caller to use its bulk scalar fallback. `Some`
-//! resumes the ordinary scalar path at the returned offsets, including `Some((0, 0))` for short
-//! inputs or decoding that stopped at the first invalid SIMD block. Short inputs can return
-//! `Some((0, 0))` before CPU feature detection, so it does not prove SIMD support is available.
-//! SIMD decoding leaves the first invalid block for scalar validation to report its exact error.
+//! `encode` and `decode` return consumed/written byte counts. `None` permits bulk scalar fallback;
+//! `Some` resumes ordinary scalar processing. `Some((0, 0))` can mean a short input or an invalid
+//! first SIMD block, and does not establish whether SIMD is available.
 
 use core::mem::MaybeUninit;
 
