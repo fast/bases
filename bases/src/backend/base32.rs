@@ -24,6 +24,9 @@ use crate::codec;
 #[allow(unsafe_code)]
 mod arch;
 
+// Keep short inputs and SIMD tails on the compact scalar path. Bulk helpers stay out of line
+// so their chunk setup does not enlarge those callers; 32 quanta is a conservative threshold,
+// not a crossover tuned for every target.
 const SCALAR_BULK_QUANTA: usize = 32;
 
 const STANDARD_UPPER: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -941,6 +944,140 @@ mod tests {
         check_roundtrip_and_arch_parity::<true, false, true, false>();
         check_roundtrip_and_arch_parity::<true, false, false, true>();
         check_roundtrip_and_arch_parity::<true, false, false, false>();
+    }
+
+    fn check_scalar_bulk<const EXTENDED_HEX: bool, const PADDED: bool, const UPPERCASE: bool>(
+        quantum: &[u8; 8],
+        tails: &[&[u8]; 5],
+    ) {
+        let mut raw = [0_u8; 170];
+        for chunk in raw.as_chunks_mut::<5>().0 {
+            chunk.copy_from_slice(b"fooba");
+        }
+        let decode = |wire: &[u8], output: &mut [u8]| {
+            let plan = decode_plan::<PADDED>(wire)?;
+            decode_scalar_bulk::<EXTENDED_HEX, UPPERCASE, true>(
+                wire,
+                plan,
+                codec::as_uninit_slice(output),
+            )
+        };
+
+        // Call the bulk helpers directly so SIMD hosts also exercise these loops and errors.
+        for quanta in [31, 32, 33] {
+            for (raw_tail_len, tail) in tails.iter().enumerate() {
+                let raw = &raw[..quanta * 5 + raw_tail_len];
+                let tail_len = if PADDED {
+                    tail.len()
+                } else {
+                    tail.iter()
+                        .position(|&byte| byte == b'=')
+                        .unwrap_or(tail.len())
+                };
+                let mut reference = [0_u8; 272];
+                for chunk in reference[..quanta * 8].as_chunks_mut::<8>().0 {
+                    chunk.copy_from_slice(quantum);
+                }
+                reference[quanta * 8..quanta * 8 + tail_len].copy_from_slice(&tail[..tail_len]);
+                let wire = &mut reference[..quanta * 8 + tail_len];
+                if !UPPERCASE {
+                    wire.make_ascii_lowercase();
+                }
+                let plan = decode_plan::<PADDED>(wire).unwrap();
+
+                for extra in [0, 7] {
+                    let mut encoded = [0xa5; 280];
+                    let written = encode_scalar_bulk::<EXTENDED_HEX, PADDED, UPPERCASE>(
+                        raw,
+                        codec::as_uninit_slice(&mut encoded[1..1 + wire.len() + extra]),
+                    );
+                    assert_eq!(&encoded[1..1 + written], wire);
+                    assert_eq!(encoded[0], 0xa5);
+                    assert!(encoded[1 + written..].iter().all(|&byte| byte == 0xa5));
+
+                    let mut decoded = [0xa5; 178];
+                    let written = decode(wire, &mut decoded[1..1 + raw.len() + extra]).unwrap();
+                    assert_eq!(&decoded[1..1 + written], raw);
+                    assert_eq!(decoded[0], 0xa5);
+                    assert!(decoded[1 + written..].iter().all(|&byte| byte == 0xa5));
+                }
+
+                let mut output = [0_u8; 170];
+                for index in [0, 7, 8, 247, 248, 255, 256, plan.data_len - 1] {
+                    if index >= plan.data_len {
+                        continue;
+                    }
+                    let original = wire[index];
+                    for byte in [b'!', 0xff] {
+                        wire[index] = byte;
+                        assert_eq!(
+                            decode(wire, &mut output),
+                            Err(DecodeError::InvalidByte { index, byte })
+                        );
+                    }
+                    // Keep '=' interior so the length/padding plan still reaches the decoder.
+                    if index + 1 < plan.data_len {
+                        wire[index] = b'=';
+                        assert_eq!(
+                            decode(wire, &mut output),
+                            Err(DecodeError::InvalidPadding { index })
+                        );
+                    }
+                    wire[index] = original;
+                }
+
+                let original = wire[8];
+                wire[8] = if UPPERCASE {
+                    original.to_ascii_lowercase()
+                } else {
+                    original.to_ascii_uppercase()
+                };
+                assert_eq!(
+                    decode(wire, &mut output),
+                    Err(DecodeError::InvalidByte {
+                        index: 8,
+                        byte: wire[8],
+                    })
+                );
+                let written = decode_scalar_bulk::<EXTENDED_HEX, UPPERCASE, false>(
+                    wire,
+                    plan,
+                    codec::as_uninit_slice(&mut output),
+                )
+                .unwrap();
+                assert_eq!(&output[..written], raw);
+                wire[8] = original;
+
+                if plan.data_len != plan.complete_len {
+                    let index = plan.data_len - 1;
+                    // Symbol value 1 sets an unused low bit for each partial-quantum length.
+                    wire[index] = match (EXTENDED_HEX, UPPERCASE) {
+                        (true, _) => b'1',
+                        (false, true) => b'B',
+                        (false, false) => b'b',
+                    };
+                    assert_eq!(
+                        decode(wire, &mut output),
+                        Err(DecodeError::NonCanonical { index })
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_bulk_preserves_rfc4648_bytes_and_error_offsets() {
+        // RFC 4648 encodings of "fooba" and the empty, "f", "fo", "foo", and "foob" tails.
+        let standard: [&[u8]; 5] = [b"", b"MY======", b"MZXQ====", b"MZXW6===", b"MZXW6YQ="];
+        let hex: [&[u8]; 5] = [b"", b"CO======", b"CPNG====", b"CPNMU===", b"CPNMUOG="];
+        check_scalar_bulk::<false, true, true>(b"MZXW6YTB", &standard);
+        check_scalar_bulk::<false, true, false>(b"MZXW6YTB", &standard);
+        check_scalar_bulk::<false, false, true>(b"MZXW6YTB", &standard);
+        check_scalar_bulk::<false, false, false>(b"MZXW6YTB", &standard);
+        check_scalar_bulk::<true, true, true>(b"CPNMUOJ1", &hex);
+        check_scalar_bulk::<true, true, false>(b"CPNMUOJ1", &hex);
+        check_scalar_bulk::<true, false, true>(b"CPNMUOJ1", &hex);
+        check_scalar_bulk::<true, false, false>(b"CPNMUOJ1", &hex);
     }
 
     fn verify_all_bytes_at_offsets<

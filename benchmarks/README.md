@@ -10,7 +10,7 @@ Run the same fixed workload for every implementation in a scenario. The results 
 | Streaming Base64     | 16 KiB                         | Process chunks of at most 257 bytes into a fixed destination.    | `base64` I/O adapters with general-purpose and SIMD engines                                            |
 | Invalid Base64 input | 1 KiB before encoding          | Reject `!` at the first or last data symbol of a padded message. | `data-encoding`, `base64`, `base64::Simd`, `base64-simd`                                               |
 
-All families have caller-buffer cases at 8 B, 32 B, 1 KiB and 16 KiB; Base64 also includes 64 B. This separates short-field overhead from bulk throughput. Owned workloads cover a 32-byte hex field, 1 KiB of padded Base32 or Base64, and an 8-byte unpadded URL-safe cursor. Owned decoders receive a string. Streaming includes finalization or reading to EOF, including the I/O adapter's buffering. The invalid-input cases check acceptance of the original message before corrupting one symbol.
+All families have caller-buffer cases at 8 B, 32 B, 1 KiB and 16 KiB; Base64 also includes 64 B. Base32 adds 159 B, 160 B and 164 B to cover the scalar bulk threshold and a partial quantum above it. These cases use normal CPU dispatch, so exercising the bulk scalar path requires a scalar build. This separates short-field overhead from bulk throughput. Owned workloads cover a 32-byte hex field, 1 KiB of padded Base32 or Base64, and an 8-byte unpadded URL-safe cursor. Owned decoders receive a string. Streaming includes finalization or reading to EOF, including the I/O adapter's buffering. The invalid-input cases check acceptance of the original message before corrupting one symbol.
 
 ```shell
 cargo x bench --no-run
