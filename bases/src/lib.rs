@@ -61,6 +61,10 @@
 //! profile exposes inherent methods directly without requiring trait imports, and implements the
 //! sealed [`Codec`] trait for generic callers.
 //!
+//! To decode both fully padded and unpadded Base32 or Base64 input, choose
+//! [`policy::PaddedOptional`] for padded output or [`policy::UnpaddedOptional`] for unpadded
+//! output.
+//!
 //! # API layers
 //!
 //! - **Sizing and caller buffers (`no_std`)**: `encoded_len`, `max_decoded_len`, `encode_into`,

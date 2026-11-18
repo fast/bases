@@ -39,7 +39,16 @@ Ten crate-root aliases cover standard encoding profiles:
 
 Every profile exposes inherent methods without requiring trait imports, and implements the sealed `Codec` trait for generic callers. Configurable zero-sized family types (`base16::Base16`, `base32::Base32`, and `base64::Base64`) accept `policy` markers for other combinations, such as strict single-case Base16 or RFC 5155 Base32Hex with lowercase output and case-insensitive decoding. See the [API reference](https://docs.rs/bases) for types, methods, and their contracts.
 
-For gRPC binary metadata, use `base64::Base64<base64::Standard, policy::OptionalPadding>`. It encodes `b"f"` as `Zg` and decodes both `Zg` and `Zg==`. Partial padding such as `Zg=` is invalid. The same marker works with Base64URL and both Base32 alphabets.
+For Base32 and Base64, the second type parameter selects the padding policy. The table shows how each policy handles the same byte with the standard Base64 alphabet.
+
+| Padding policy             | Encodes `b"f"` as | Accepts for `b"f"` |
+| -------------------------- | ----------------- | ------------------ |
+| `policy::Padded`           | `Zg==`            | `Zg==`             |
+| `policy::Unpadded`         | `Zg`              | `Zg`               |
+| `policy::PaddedOptional`   | `Zg==`            | `Zg==`, `Zg`       |
+| `policy::UnpaddedOptional` | `Zg`              | `Zg==`, `Zg`       |
+
+For example, use `base64::Base64<base64::Standard, policy::UnpaddedOptional>` for gRPC binary metadata. Both optional policies reject partial padding such as `Zg=`, excess padding, and non-zero unused trailing bits.
 
 ## API layers and features
 

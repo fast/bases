@@ -64,48 +64,66 @@ fn payload(len: usize) -> Vec<u8> {
 
 #[test]
 fn optional_padding_accepts_only_canonical_tail_lengths() {
-    fn check<C: Codec>(reference: &Encoding) {
+    fn check_decode<C: Codec>(wire: &str, expected: Option<&[u8]>) {
+        let mut out = vec![0; C::max_decoded_len(wire.len())];
+        assert_eq!(
+            C::decode_into(wire, &mut out).ok().as_deref(),
+            expected,
+            "{wire}"
+        );
+        let mut in_place = wire.as_bytes().to_vec();
+        assert_eq!(
+            C::decode_in_place(&mut in_place).ok().as_deref(),
+            expected,
+            "{wire}"
+        );
+        for chunk in 1..=wire.len().max(1) {
+            assert_eq!(
+                streaming::decode::<C>(wire.as_bytes(), chunk)
+                    .ok()
+                    .as_deref(),
+                expected,
+                "{wire}, chunk {chunk}"
+            );
+        }
+    }
+
+    fn check<Padded: Codec, Unpadded: Codec>(reference: &Encoding) {
         for len in 0..=10 {
             let raw = payload(len);
             let padded = reference.encode(&raw);
             let bare = padded.trim_end_matches('=');
-            assert_eq!(C::encode(&raw), bare);
+            assert_eq!(Padded::encode(&raw), padded);
+            assert_eq!(Unpadded::encode(&raw), bare);
+            assert_eq!(streaming::encode::<Padded>(&raw, 1), padded);
+            assert_eq!(streaming::encode::<Unpadded>(&raw, 1), bare);
 
             let required = padded.len() - bare.len();
             for count in 0..=required + 1 {
                 let wire = format!("{bare}{}", "=".repeat(count));
                 let expected = (count == 0 || count == required).then_some(raw.as_slice());
-                let mut out = vec![0; C::max_decoded_len(wire.len())];
-                assert_eq!(
-                    C::decode_into(&wire, &mut out).ok().as_deref(),
-                    expected,
-                    "{wire}"
-                );
-                let mut in_place = wire.as_bytes().to_vec();
-                assert_eq!(
-                    C::decode_in_place(&mut in_place).ok().as_deref(),
-                    expected,
-                    "{wire}"
-                );
-                for chunk in 1..=wire.len().max(1) {
-                    assert_eq!(
-                        streaming::decode::<C>(wire.as_bytes(), chunk)
-                            .ok()
-                            .as_deref(),
-                        expected,
-                        "{wire}, chunk {chunk}"
-                    );
-                }
+                check_decode::<Padded>(&wire, expected);
+                check_decode::<Unpadded>(&wire, expected);
             }
         }
     }
 
-    check::<base64::Base64<base64::Standard, policy::OptionalPadding>>(&data_encoding::BASE64);
-    check::<base64::Base64<base64::UrlSafe, policy::OptionalPadding>>(&data_encoding::BASE64URL);
-    check::<base32::Base32<base32::Standard, policy::OptionalPadding>>(&data_encoding::BASE32);
-    check::<base32::Base32<base32::ExtendedHex, policy::OptionalPadding>>(
-        &data_encoding::BASE32HEX,
-    );
+    check::<
+        base64::Base64<base64::Standard, policy::PaddedOptional>,
+        base64::Base64<base64::Standard, policy::UnpaddedOptional>,
+    >(&data_encoding::BASE64);
+    check::<
+        base64::Base64<base64::UrlSafe, policy::PaddedOptional>,
+        base64::Base64<base64::UrlSafe, policy::UnpaddedOptional>,
+    >(&data_encoding::BASE64URL);
+    check::<
+        base32::Base32<base32::Standard, policy::PaddedOptional>,
+        base32::Base32<base32::Standard, policy::UnpaddedOptional>,
+    >(&data_encoding::BASE32);
+    check::<
+        base32::Base32<base32::ExtendedHex, policy::PaddedOptional>,
+        base32::Base32<base32::ExtendedHex, policy::UnpaddedOptional>,
+    >(&data_encoding::BASE32HEX);
 }
 
 macro_rules! profile {

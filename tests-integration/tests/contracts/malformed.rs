@@ -28,8 +28,8 @@ use crate::streaming;
 
 #[test]
 fn optional_padding_preserves_alphabet_and_trailing_bit_errors() {
-    type Base64 = base64::Base64<base64::Standard, policy::OptionalPadding>;
-    type Base32 = base32::Base32<base32::Standard, policy::OptionalPadding>;
+    type Base64 = base64::Base64<base64::Standard, policy::UnpaddedOptional>;
+    type Base32 = base32::Base32<base32::Standard, policy::PaddedOptional>;
 
     for wire in [b"Zm9vZh".as_slice(), b"Zm9vZh=="] {
         assert_error::<Base64>(wire, DecodeError::NonCanonical { index: 5 });

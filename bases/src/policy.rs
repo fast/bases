@@ -13,8 +13,28 @@
 // limitations under the License.
 
 //! Policy markers for encoding and decoding profiles.
-
-use crate::policy::sealed::PaddingMode;
+//!
+//! For Base32 and Base64, [`PaddedOptional`] and [`UnpaddedOptional`] select the encoded
+//! output. Both accept input with complete padding or with the padding omitted.
+//!
+//! ```
+//! use bases::base64;
+//! use bases::policy;
+//!
+//! type Padded = base64::Base64<base64::Standard, policy::PaddedOptional>;
+//! type Unpadded = base64::Base64<base64::Standard, policy::UnpaddedOptional>;
+//!
+//! let mut output = [0; 4];
+//! assert_eq!(Padded::encode_into(b"f", &mut output).unwrap(), "Zg==");
+//! assert_eq!(Unpadded::encode_into(b"f", &mut output).unwrap(), "Zg");
+//!
+//! for input in ["Zg", "Zg=="] {
+//!     assert_eq!(Padded::decode_array(input), Ok(*b"f"));
+//!     assert_eq!(Unpadded::decode_array(input), Ok(*b"f"));
+//! }
+//! assert!(Padded::decode_array::<1>("Zg=").is_err());
+//! assert!(Unpadded::decode_array::<1>("Zg=").is_err());
+//! ```
 
 /// Padding policy that requires and emits canonical `=` padding.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -24,24 +44,19 @@ pub struct Padded;
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct Unpadded;
 
-/// Omits padding when encoding and accepts either complete canonical padding or none when decoding.
+/// Emits canonical `=` padding. Decoding accepts complete padding or none.
 ///
-/// For example, gRPC binary metadata uses this policy with the standard Base64 alphabet.
-///
-/// ```
-/// use bases::base64;
-/// use bases::policy;
-///
-/// type Metadata = base64::Base64<base64::Standard, policy::OptionalPadding>;
-///
-/// let mut output = [0; 4];
-/// assert_eq!(Metadata::encode_into(b"f", &mut output).unwrap(), "Zg");
-/// assert_eq!(Metadata::decode_array("Zg"), Ok(*b"f"));
-/// assert_eq!(Metadata::decode_array("Zg=="), Ok(*b"f"));
-/// assert!(Metadata::decode_array::<1>("Zg=").is_err());
-/// ```
+/// For example, standard Base64 encodes `b"f"` as `Zg==` and accepts both `Zg==` and `Zg`.
+/// Partial padding such as `Zg=` is invalid. See [`UnpaddedOptional`] for unpadded output.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-pub struct OptionalPadding;
+pub struct PaddedOptional;
+
+/// Omits `=` padding. Decoding accepts complete padding or none.
+///
+/// For example, standard Base64 encodes `b"f"` as `Zg` and accepts both `Zg` and `Zg==`.
+/// Partial padding such as `Zg=` is invalid. See [`PaddedOptional`] for padded output.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct UnpaddedOptional;
 
 /// Letter case policy that emits lowercase ASCII letters.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -60,15 +75,23 @@ pub struct Mixed;
 pub struct Strict;
 
 impl sealed::PaddingPolicy for Padded {
-    const MODE: PaddingMode = PaddingMode::Required;
+    const EMIT_PADDING: bool = true;
+    const DECODE_PADDING_OPTIONAL: bool = false;
 }
 
 impl sealed::PaddingPolicy for Unpadded {
-    const MODE: PaddingMode = PaddingMode::Forbidden;
+    const EMIT_PADDING: bool = false;
+    const DECODE_PADDING_OPTIONAL: bool = false;
 }
 
-impl sealed::PaddingPolicy for OptionalPadding {
-    const MODE: PaddingMode = PaddingMode::Optional;
+impl sealed::PaddingPolicy for PaddedOptional {
+    const EMIT_PADDING: bool = true;
+    const DECODE_PADDING_OPTIONAL: bool = true;
+}
+
+impl sealed::PaddingPolicy for UnpaddedOptional {
+    const EMIT_PADDING: bool = false;
+    const DECODE_PADDING_OPTIONAL: bool = true;
 }
 
 impl sealed::LetterCase for Lower {
@@ -88,28 +111,35 @@ impl sealed::DecodeCasePolicy for Strict {
 }
 
 pub(crate) mod sealed {
-    #[derive(Clone, Copy)]
-    pub enum PaddingMode {
-        Required,
-        Forbidden,
-        Optional,
-    }
+    pub trait PaddingPolicy: 'static {
+        const EMIT_PADDING: bool;
+        const DECODE_PADDING_OPTIONAL: bool;
+        const ACCEPTS_PADDING: bool = Self::EMIT_PADDING || Self::DECODE_PADDING_OPTIONAL;
 
-    impl PaddingMode {
         #[inline]
-        pub fn decode_padded(self, input: &[u8]) -> bool {
-            match self {
-                Self::Required => true,
-                Self::Forbidden => false,
-                Self::Optional => input.last() == Some(&b'='),
+        fn decode_padded(input: &[u8]) -> bool {
+            if Self::DECODE_PADDING_OPTIONAL {
+                input.last() == Some(&b'=')
+            } else {
+                Self::EMIT_PADDING
             }
         }
     }
 
-    pub trait PaddingPolicy: 'static {
-        const MODE: PaddingMode;
-        const EMIT_PADDING: bool = matches!(Self::MODE, PaddingMode::Required);
+    macro_rules! profile_name {
+        ($base:literal, $padding:ty) => {
+            match (
+                <$padding>::EMIT_PADDING,
+                <$padding>::DECODE_PADDING_OPTIONAL,
+            ) {
+                (true, false) => $base,
+                (false, false) => concat!($base, "-unpadded"),
+                (true, true) => concat!($base, "-padded-optional"),
+                (false, true) => concat!($base, "-unpadded-optional"),
+            }
+        };
     }
+    pub(crate) use profile_name;
 
     pub trait LetterCase: 'static {
         const UPPERCASE: bool;

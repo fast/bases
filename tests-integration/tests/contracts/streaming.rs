@@ -54,7 +54,7 @@ pub fn check<C: Codec>(reference: &Encoding) {
     retry_invalid_update::<C>(reference);
 }
 
-fn encode<C: Codec>(raw: &[u8], chunk: usize) -> String {
+pub fn encode<C: Codec>(raw: &[u8], chunk: usize) -> String {
     let mut encoder = C::encoder();
     let mut encoded = String::new();
     for part in raw.chunks(chunk) {
