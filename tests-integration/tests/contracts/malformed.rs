@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::mem::MaybeUninit;
+
 use bases::Codec;
 use bases::DecodeError;
 use bases::DecodeSliceError;
@@ -114,6 +116,11 @@ fn assert_error<C: Codec>(wire: &[u8], expected: DecodeError) {
     let mut output = vec![0; C::max_decoded_len(wire.len())];
     assert_that!(
         C::decode_into(wire, &mut output),
+        err(eq(&DecodeSliceError::Decode(expected)))
+    );
+    let mut uninitialized = vec![MaybeUninit::<u8>::uninit(); output.len()];
+    assert_that!(
+        C::decode_into_uninit(wire, &mut uninitialized),
         err(eq(&DecodeSliceError::Decode(expected)))
     );
     assert_that!(C::decode(wire), err(eq(&expected)));

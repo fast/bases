@@ -214,6 +214,15 @@ where
         codec::encode_into::<Self>(input, output)
     }
 
+    /// See [`Codec::encode_into_uninit`](crate::Codec::encode_into_uninit).
+    #[inline]
+    pub fn encode_into_uninit<'output>(
+        input: &[u8],
+        output: &'output mut [MaybeUninit<u8>],
+    ) -> Result<&'output mut str, EncodeError> {
+        codec::encode_into_uninit::<Self>(input, output)
+    }
+
     /// Decodes `input` into `output`, returning the written prefix.
     ///
     /// After any error, the contents of `output` are unspecified.
@@ -229,6 +238,15 @@ where
         output: &mut [u8],
     ) -> Result<&mut [u8], DecodeSliceError> {
         codec::decode_into::<Self>(input.as_ref(), output)
+    }
+
+    /// See [`Codec::decode_into_uninit`](crate::Codec::decode_into_uninit).
+    #[inline]
+    pub fn decode_into_uninit(
+        input: impl AsRef<[u8]>,
+        output: &mut [MaybeUninit<u8>],
+    ) -> Result<&mut [u8], DecodeSliceError> {
+        codec::decode_into_uninit::<Self>(input.as_ref(), output)
     }
 
     /// Decodes `buf` in place, returning the written prefix.

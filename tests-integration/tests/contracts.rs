@@ -71,6 +71,10 @@ macro_rules! profile {
                 buffers::check::<C>(&reference($alphabet, $padded, $mixed));
             }
             #[test]
+            fn uninitialized_output_buffers() {
+                buffers::uninitialized::<C>(&reference($alphabet, $padded, $mixed));
+            }
+            #[test]
             fn fixed_arrays() {
                 buffers::arrays::<C>(&reference($alphabet, $padded, $mixed));
             }

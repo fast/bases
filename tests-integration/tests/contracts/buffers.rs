@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use core::mem::MaybeUninit;
+
 use bases::Codec;
 use bases::DecodeError;
 use bases::DecodeSliceError;
@@ -105,6 +107,82 @@ pub fn check<C: Codec>(reference: &Encoding) {
             assert_eq!(&decoded[..3], [0, 0xff, 0x80]);
             assert_eq!(&decoded[3..], raw);
         }
+    }
+}
+
+pub fn uninitialized<C: Codec>(reference: &Encoding) {
+    for len in [
+        0, 1, 2, 3, 4, 5, 12, 15, 16, 17, 24, 31, 32, 33, 63, 64, 65, 159, 160, 161, 164, 1024,
+    ] {
+        let raw = payload(len);
+        let wire = reference.encode(&raw);
+        for offset in [0, 1] {
+            let mut encoded = vec![MaybeUninit::new(0xa5); offset + wire.len() + 32];
+            for slot in &mut encoded[offset..offset + wire.len()] {
+                *slot = MaybeUninit::uninit();
+            }
+            assert_eq!(
+                C::encode_into_uninit(&raw, &mut encoded[offset..offset + wire.len()]).unwrap(),
+                wire.as_str(),
+            );
+            assert_guards(&encoded[..offset]);
+            assert_guards(&encoded[offset + wire.len()..]);
+
+            for capacity in [len, C::max_decoded_len(wire.len()), len + 32] {
+                let mut decoded = vec![MaybeUninit::new(0xa5); offset + capacity + 32];
+                for slot in &mut decoded[offset..offset + capacity] {
+                    *slot = MaybeUninit::uninit();
+                }
+                assert_eq!(
+                    C::decode_into_uninit(&wire, &mut decoded[offset..offset + capacity]).unwrap(),
+                    raw,
+                );
+                assert_guards(&decoded[..offset]);
+                assert_guards(&decoded[offset + capacity..]);
+            }
+        }
+
+        if len != 0 {
+            let mut encoded = vec![MaybeUninit::<u8>::uninit(); wire.len() - 1];
+            assert_eq!(
+                C::encode_into_uninit(&raw, &mut encoded),
+                Err(EncodeError::OutputTooSmall {
+                    required: wire.len(),
+                    available: wire.len() - 1,
+                }),
+            );
+            let mut decoded = vec![MaybeUninit::<u8>::uninit(); len - 1];
+            assert_eq!(
+                C::decode_into_uninit(&wire, &mut decoded),
+                Err(DecodeSliceError::OutputTooSmall {
+                    required: len,
+                    available: len - 1,
+                }),
+            );
+        }
+    }
+
+    let wire = reference.encode(b"foo");
+    let mut encoded = Vec::<u8>::with_capacity(wire.len());
+    assert_eq!(
+        C::encode_into_uninit(b"foo", encoded.spare_capacity_mut()).unwrap(),
+        wire.as_str(),
+    );
+    assert_eq!(encoded.len(), 0);
+
+    let mut decoded = Vec::<u8>::with_capacity(C::max_decoded_len(wire.len()));
+    assert_eq!(
+        C::decode_into_uninit(&wire, decoded.spare_capacity_mut()).unwrap(),
+        b"foo",
+    );
+    assert_eq!(decoded.len(), 0);
+}
+
+#[allow(unsafe_code)]
+fn assert_guards(guards: &[MaybeUninit<u8>]) {
+    for guard in guards {
+        // SAFETY: These initialized guards are outside the output slice.
+        assert_eq!(unsafe { guard.assume_init() }, 0xa5);
     }
 }
 

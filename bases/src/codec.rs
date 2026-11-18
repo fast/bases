@@ -107,6 +107,16 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
         encode_into::<Self>(input, output)
     }
 
+    /// Encodes into uninitialized storage, returning only the initialized ASCII prefix.
+    /// Existing initialized slots stay initialized, including on error; values may change.
+    #[inline]
+    fn encode_into_uninit<'output>(
+        input: &[u8],
+        output: &'output mut [MaybeUninit<u8>],
+    ) -> Result<&'output mut str, EncodeError> {
+        encode_into_uninit::<Self>(input, output)
+    }
+
     /// Decodes `input` into `output`, returning the written prefix.
     ///
     /// Decoding is strict: non-alphabet bytes, misplaced padding, and
@@ -125,6 +135,17 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
         output: &mut [u8],
     ) -> Result<&mut [u8], DecodeSliceError> {
         decode_into::<Self>(input.as_ref(), output)
+    }
+
+    /// Decodes into uninitialized storage, returning only the initialized prefix.
+    /// Errors may leave partial writes but return no slice; initialized slots stay initialized.
+    /// Container lengths are unchanged; capacity errors do not guarantee input validity.
+    #[inline]
+    fn decode_into_uninit(
+        input: impl AsRef<[u8]>,
+        output: &mut [MaybeUninit<u8>],
+    ) -> Result<&mut [u8], DecodeSliceError> {
+        decode_into_uninit::<Self>(input.as_ref(), output)
     }
 
     /// Decodes `buf` in place, returning the written prefix.
@@ -293,6 +314,16 @@ pub fn as_uninit_slice(bytes: &mut [u8]) -> &mut [MaybeUninit<u8>] {
     unsafe { slice::from_raw_parts_mut(bytes.as_mut_ptr().cast::<MaybeUninit<u8>>(), len) }
 }
 
+/// # Safety
+///
+/// Every slot in `bytes` must be initialized.
+#[allow(unsafe_code)]
+#[inline]
+pub unsafe fn assume_init_slice_mut(bytes: &mut [MaybeUninit<u8>]) -> &mut [u8] {
+    // SAFETY: The caller guarantees initialization; the cast preserves layout and borrow.
+    unsafe { slice::from_raw_parts_mut(bytes.as_mut_ptr().cast::<u8>(), bytes.len()) }
+}
+
 /// Converts an ASCII byte slice to `&mut str` without re-validating UTF-8.
 ///
 /// # Safety
@@ -357,11 +388,19 @@ fn append_encoded_ascii<C: Codec>(input: &[u8], buf: &mut String, start: usize, 
     debug_assert!(vec[start..new_len].is_ascii());
 }
 
-#[allow(unsafe_code)]
 #[inline]
 pub fn encode_into<'output, C: Codec>(
     input: &[u8],
     output: &'output mut [u8],
+) -> Result<&'output mut str, EncodeError> {
+    encode_into_uninit::<C>(input, as_uninit_slice(output))
+}
+
+#[allow(unsafe_code)]
+#[inline]
+pub fn encode_into_uninit<'output, C: Codec>(
+    input: &[u8],
+    output: &'output mut [MaybeUninit<u8>],
 ) -> Result<&'output mut str, EncodeError> {
     let required = C::encoded_len(input.len())?;
     if output.len() < required {
@@ -371,18 +410,30 @@ pub fn encode_into<'output, C: Codec>(
         });
     }
 
-    let written = C::Profile::encode_impl(input, as_uninit_slice(output));
+    let written = C::Profile::encode_impl(input, output);
     debug_assert_eq!(written, required);
 
-    // SAFETY: Binary-to-text backends always write `written` initialized ASCII bytes into
-    // `output[..written]`.
-    Ok(unsafe { ascii_to_str_mut(&mut output[..written]) })
+    let output = &mut output[..written];
+    // SAFETY: The backend initialized this prefix as ASCII.
+    Ok(unsafe {
+        let bytes = assume_init_slice_mut(output);
+        ascii_to_str_mut(bytes)
+    })
 }
 
 #[inline]
 pub fn decode_into<'output, C: Codec>(
     input: &[u8],
     output: &'output mut [u8],
+) -> Result<&'output mut [u8], DecodeSliceError> {
+    decode_into_uninit::<C>(input, as_uninit_slice(output))
+}
+
+#[allow(unsafe_code)]
+#[inline]
+pub fn decode_into_uninit<'output, C: Codec>(
+    input: &[u8],
+    output: &'output mut [MaybeUninit<u8>],
 ) -> Result<&'output mut [u8], DecodeSliceError> {
     let plan = C::Profile::decode_plan_impl(input)?;
     if output.len() < plan.required {
@@ -393,9 +444,10 @@ pub fn decode_into<'output, C: Codec>(
     }
 
     let out = &mut output[..plan.required];
-    let written = C::Profile::decode_with_plan_impl(input, plan, as_uninit_slice(out))?;
+    let written = C::Profile::decode_with_plan_impl(input, plan, out)?;
     debug_assert_eq!(written, plan.required);
-    Ok(out)
+    // SAFETY: Successful decoding initializes exactly the `plan.required` bytes in `out`.
+    Ok(unsafe { assume_init_slice_mut(out) })
 }
 
 #[inline]
@@ -540,5 +592,81 @@ pub(crate) mod sealed {
         ) -> Result<usize, DecodeError>;
         fn decode_in_place_impl(buf: &mut [u8]) -> Result<usize, DecodeError>;
         fn decoded_padding_reduction(padding: usize) -> Option<usize>;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::hint;
+    use core::mem::MaybeUninit;
+
+    use crate::Base16Lower;
+    use crate::Base32;
+    use crate::Base64;
+    use crate::DecodeError;
+    use crate::DecodeSliceError;
+
+    #[test]
+    fn initialized_storage_remains_readable_after_decode_error() {
+        let mut storage = [7_u8; 12];
+        assert_eq!(
+            Base64::decode_into("Zm9v!!!!", &mut storage[2..8]),
+            Err(DecodeSliceError::Decode(DecodeError::InvalidByte {
+                index: 4,
+                byte: b'!',
+            })),
+        );
+        assert_eq!(&storage[..2], &[7; 2]);
+        assert_eq!(&storage[8..], &[7; 4]);
+        for byte in storage {
+            hint::black_box(byte);
+        }
+    }
+
+    #[test]
+    fn uninitialized_results_are_borrowed_prefixes() {
+        let mut encoded = [MaybeUninit::<u8>::uninit(); 8];
+        let encoded_ptr = encoded.as_ptr().cast::<u8>();
+        let text = Base64::encode_into_uninit(b"foo", &mut encoded).unwrap();
+        assert_eq!(text, "Zm9v");
+        assert_eq!(text.as_ptr(), encoded_ptr);
+
+        let mut decoded = [MaybeUninit::<u8>::uninit(); 8];
+        let decoded_ptr = decoded.as_ptr().cast::<u8>();
+        let bytes = Base64::decode_into_uninit("/w==", &mut decoded).unwrap();
+        assert_eq!(bytes, [0xff]);
+        assert_eq!(bytes.as_ptr(), decoded_ptr);
+
+        let mut hex = [MaybeUninit::<u8>::uninit(); 2];
+        assert_eq!(
+            Base16Lower::encode_into_uninit(b"\xff", &mut hex).unwrap(),
+            "ff"
+        );
+        assert_eq!(
+            Base16Lower::decode_into_uninit("ff", &mut hex).unwrap(),
+            [0xff]
+        );
+    }
+
+    #[test]
+    fn base32_bulk_output_initializes_only_the_successful_prefix() {
+        let mut raw = [0_u8; 161];
+        raw[160] = b'f';
+        let mut wire = [b'A'; 264];
+        wire[256..].copy_from_slice(b"MY======");
+
+        let mut encoded = [MaybeUninit::<u8>::uninit(); 272];
+        assert_eq!(
+            Base32::encode_into_uninit(&raw, &mut encoded)
+                .unwrap()
+                .as_bytes(),
+            wire,
+        );
+        let mut decoded = [MaybeUninit::<u8>::uninit(); Base32::max_decoded_len(264)];
+        assert_eq!(Base32::decode_into_uninit(wire, &mut decoded).unwrap(), raw);
+
+        wire[255] = b'!';
+        let mut output = [MaybeUninit::<u8>::uninit(); Base32::max_decoded_len(264)];
+        assert!(Base32::decode_into_uninit(wire, &mut output).is_err());
     }
 }
