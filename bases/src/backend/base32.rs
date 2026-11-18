@@ -24,7 +24,6 @@ use crate::codec;
 #[allow(unsafe_code)]
 mod arch;
 
-// Keep bulk setup out of the compact short-input and SIMD-tail paths.
 const SCALAR_BULK_QUANTA: usize = 32;
 
 const STANDARD_UPPER: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";

@@ -13,10 +13,6 @@
 // limitations under the License.
 
 //! Base32 backend dispatch.
-//!
-//! `encode` and `decode` return consumed/written byte counts. `None` permits bulk scalar fallback;
-//! `Some` resumes ordinary scalar processing. `Some((0, 0))` can mean a short input or an invalid
-//! first SIMD block, and does not establish whether SIMD is available.
 
 use core::mem::MaybeUninit;
 
