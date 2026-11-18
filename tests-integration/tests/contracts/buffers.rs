@@ -117,28 +117,16 @@ pub fn uninitialized<C: Codec>(reference: &Encoding) {
         let raw = payload(len);
         let wire = reference.encode(&raw);
         for offset in [0, 1] {
-            let mut encoded = vec![MaybeUninit::new(0xa5); offset + wire.len() + 32];
-            for slot in &mut encoded[offset..offset + wire.len()] {
-                *slot = MaybeUninit::uninit();
+            for capacity in [wire.len(), wire.len() + 32] {
+                with_guarded_output(offset, capacity, |output| {
+                    assert_eq!(C::encode_into_uninit(&raw, output).unwrap(), wire.as_str());
+                });
             }
-            assert_eq!(
-                C::encode_into_uninit(&raw, &mut encoded[offset..offset + wire.len()]).unwrap(),
-                wire.as_str(),
-            );
-            assert_guards(&encoded[..offset]);
-            assert_guards(&encoded[offset + wire.len()..]);
 
             for capacity in [len, C::max_decoded_len(wire.len()), len + 32] {
-                let mut decoded = vec![MaybeUninit::new(0xa5); offset + capacity + 32];
-                for slot in &mut decoded[offset..offset + capacity] {
-                    *slot = MaybeUninit::uninit();
-                }
-                assert_eq!(
-                    C::decode_into_uninit(&wire, &mut decoded[offset..offset + capacity]).unwrap(),
-                    raw,
-                );
-                assert_guards(&decoded[..offset]);
-                assert_guards(&decoded[offset + capacity..]);
+                with_guarded_output(offset, capacity, |output| {
+                    assert_eq!(C::decode_into_uninit(&wire, output).unwrap(), raw);
+                });
             }
         }
 
@@ -179,9 +167,15 @@ pub fn uninitialized<C: Codec>(reference: &Encoding) {
 }
 
 #[allow(unsafe_code)]
-fn assert_guards(guards: &[MaybeUninit<u8>]) {
-    for guard in guards {
-        // SAFETY: These initialized guards are outside the output slice.
+fn with_guarded_output(offset: usize, capacity: usize, check: impl FnOnce(&mut [MaybeUninit<u8>])) {
+    let mut storage = vec![MaybeUninit::new(0xa5); offset + capacity + 32];
+    let (before, rest) = storage.split_at_mut(offset);
+    let (output, after) = rest.split_at_mut(capacity);
+    output.fill(MaybeUninit::uninit());
+    check(output);
+
+    for guard in before.iter().chain(after.iter()) {
+        // SAFETY: Both guard slices contain 0xa5 at initialization and only `output` is lent out.
         assert_eq!(unsafe { guard.assume_init() }, 0xa5);
     }
 }
