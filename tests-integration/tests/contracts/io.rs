@@ -16,7 +16,9 @@ use std::io;
 use std::io::Read;
 use std::io::Write;
 
+use bases::Base64;
 use bases::Codec;
+use bases::DecodeError;
 use bases::io::DecoderReader;
 use bases::io::EncoderWriter;
 use data_encoding::Encoding;
@@ -130,5 +132,34 @@ pub fn check<C: Codec>(reference: &Encoding) {
         for &(write_chunk, read_chunk) in &[(1, 1), (7, 3), (13, 5), (257, 17), (1009, 1024)] {
             check::<C>(payload, write_chunk, read_chunk, reference);
         }
+    }
+}
+
+#[test]
+fn decoder_reader_exposes_invalid_data_and_inner_accessors() {
+    let cases: [(&[u8], DecodeError); 3] = [
+        (
+            b"Zm9vYm!y",
+            DecodeError::InvalidByte {
+                index: 6,
+                byte: b'!',
+            },
+        ),
+        (b"Zg==AAAA", DecodeError::InvalidPadding { index: 2 }),
+        (b"Zh==", DecodeError::NonCanonical { index: 1 }),
+    ];
+
+    for (wire, expected) in cases {
+        let mut reader = Base64::decoder_reader(ChunkedReader::new(wire, 1, 0));
+        assert_eq!(reader.get_ref().data, wire);
+        let _ = reader.get_mut();
+        let mut out = Vec::new();
+        let err = reader.read_to_end(&mut out).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            err.get_ref().and_then(|e| e.downcast_ref::<DecodeError>()),
+            Some(&expected)
+        );
+        assert_eq!(reader.into_inner().data, wire);
     }
 }

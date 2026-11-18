@@ -21,40 +21,6 @@ use bases::Base64;
 use bases::DecodeError;
 use bases::io::EncoderWriter;
 
-struct ChunkedReader<'a> {
-    data: &'a [u8],
-    pos: usize,
-    max_read: usize,
-    interrupt_every: usize,
-    calls: usize,
-}
-
-impl<'a> ChunkedReader<'a> {
-    fn new(data: &'a [u8], max_read: usize, interrupt_every: usize) -> Self {
-        Self {
-            data,
-            pos: 0,
-            max_read,
-            interrupt_every,
-            calls: 0,
-        }
-    }
-}
-
-impl Read for ChunkedReader<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.calls += 1;
-        if self.interrupt_every > 0 && self.calls.is_multiple_of(self.interrupt_every) {
-            return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
-        }
-        let remaining = self.data.len() - self.pos;
-        let take = remaining.min(buf.len()).min(self.max_read);
-        buf[..take].copy_from_slice(&self.data[self.pos..self.pos + take]);
-        self.pos += take;
-        Ok(take)
-    }
-}
-
 #[test]
 fn encoder_writer_handles_drop_and_into_inner() {
     // Inherent constructors work without Codec in scope.
@@ -80,32 +46,16 @@ fn encoder_writer_handles_drop_and_into_inner() {
 }
 
 #[test]
-fn decoder_reader_exposes_invalid_data_and_inner_accessors() {
-    let cases: [(&[u8], DecodeError); 4] = [
-        (b"Zg", DecodeError::InvalidLength { length: 2 }),
-        (
-            b"Zm9vYm!y",
-            DecodeError::InvalidByte {
-                index: 6,
-                byte: b'!',
-            },
-        ),
-        (b"Zg==AAAA", DecodeError::InvalidPadding { index: 2 }),
-        (b"Zh==", DecodeError::NonCanonical { index: 1 }),
-    ];
-
-    for (wire, expected) in cases {
-        let mut reader = Base64::decoder_reader(ChunkedReader::new(wire, 1, 0));
-        assert_eq!(reader.get_ref().data, wire);
-        let _ = reader.get_mut();
-        let mut out = Vec::new();
-        let err = reader.read_to_end(&mut out).unwrap_err();
+fn decoder_reader_repeats_the_finalization_error_at_eof() {
+    let mut reader = Base64::decoder_reader(&b"Zg"[..]);
+    let mut buf = [0; 3];
+    for _ in 0..2 {
+        let err = reader.read(&mut buf).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(
             err.get_ref().and_then(|e| e.downcast_ref::<DecodeError>()),
-            Some(&expected)
+            Some(&DecodeError::InvalidLength { length: 2 })
         );
-        assert_eq!(reader.into_inner().data, wire);
     }
 }
 
