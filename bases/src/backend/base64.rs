@@ -28,6 +28,7 @@ const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 const INVALID_SYMBOL: u8 = 0xff;
+const CHECK_SIMD_MIN: usize = 16;
 const STD_DECODE_LUTS: [[i32; 256]; 4] = make_decode_luts(false);
 const URL_DECODE_LUTS: [[i32; 256]; 4] = make_decode_luts(true);
 const STD_DECODE_BYTE_LUT: [u8; 256] = make_decode_byte_lut(false);
@@ -147,6 +148,50 @@ pub fn decode_plan<const PADDED: bool>(input: &[u8]) -> Result<DecodePlan, Decod
             padding: 0,
         })
     }
+}
+
+/// Checks alphabet symbols and unused bits using an existing decode plan.
+#[inline]
+pub fn check_with_plan<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    plan: DecodePlan,
+) -> Result<(), DecodeError> {
+    let lut = if URL_SAFE_ALPHABET {
+        &URL_DECODE_BYTE_LUT
+    } else {
+        &STD_DECODE_BYTE_LUT
+    };
+    if plan.complete_len < CHECK_SIMD_MIN {
+        let mut last = 0;
+        for (index, &byte) in input[..plan.data_len].iter().enumerate() {
+            last = decode_value(byte, index, lut)?;
+        }
+        if plan.complete_len != plan.data_len {
+            check_tail_bits(last, plan.data_len - plan.complete_len, plan.data_len - 1)?;
+        }
+        return Ok(());
+    }
+    decode_value(input[0], 0, lut)?;
+    let checked = arch::check::<URL_SAFE_ALPHABET>(&input[..plan.complete_len])
+        .map_err(|index| backend::invalid_byte_error(input[index], index))?;
+    let remaining = &input[checked..plan.data_len];
+    let last = if remaining.len() < 32 {
+        let mut last = 0;
+        for (index, &byte) in remaining.iter().enumerate() {
+            last = decode_value(byte, checked + index, lut)?;
+        }
+        last
+    } else {
+        if let Some(index) = backend::find_invalid(remaining, lut) {
+            let index = checked + index;
+            return Err(backend::invalid_byte_error(input[index], index));
+        }
+        lut[usize::from(input[plan.data_len - 1])]
+    };
+    if plan.complete_len != plan.data_len {
+        check_tail_bits(last, plan.data_len - plan.complete_len, plan.data_len - 1)?;
+    }
+    Ok(())
 }
 
 /// Encodes `input` into `output` using Base64, returning the number of bytes written.
@@ -611,11 +656,7 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
         [first, second] => {
             let v0 = decode_value(*first, base_index, lut)?;
             let v1 = decode_value(*second, base_index + 1, lut)?;
-            if v1 & 0x0f != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 1,
-                });
-            }
+            check_tail_bits(v1, trailing.len(), base_index + 1)?;
             output[0].write((v0 << 2) | (v1 >> 4));
             Ok(1)
         }
@@ -623,16 +664,26 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
             let v0 = decode_value(*first, base_index, lut)?;
             let v1 = decode_value(*second, base_index + 1, lut)?;
             let v2 = decode_value(*third, base_index + 2, lut)?;
-            if v2 & 0x03 != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 2,
-                });
-            }
+            check_tail_bits(v2, trailing.len(), base_index + 2)?;
             output[0].write((v0 << 2) | (v1 >> 4));
             output[1].write((v1 << 4) | (v2 >> 2));
             Ok(2)
         }
         _ => unreachable!(),
+    }
+}
+
+#[inline]
+fn check_tail_bits(value: u8, tail_len: usize, index: usize) -> Result<(), DecodeError> {
+    let mask = match tail_len {
+        2 => 0x0f,
+        3 => 0x03,
+        _ => unreachable!("decode plan guarantees a valid tail length"),
+    };
+    if value & mask == 0 {
+        Ok(())
+    } else {
+        Err(DecodeError::NonCanonical { index })
     }
 }
 

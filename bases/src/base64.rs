@@ -169,6 +169,32 @@ where
         backend::base64::max_decoded_len(input_len)
     }
 
+    /// Computes the exact decoded length if `input` can be decoded successfully.
+    ///
+    /// This does not fully validate the input. See
+    /// [`Codec::decoded_len`](crate::Codec::decoded_len).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::InvalidLength`] or [`DecodeError::InvalidPadding`]
+    /// for structural errors detected while computing the output size.
+    #[inline]
+    pub fn decoded_len(input: impl AsRef<[u8]>) -> Result<usize, DecodeError> {
+        codec::decoded_len::<Self>(input.as_ref())
+    }
+
+    /// Validates encoded input without allocating or writing decoded bytes.
+    ///
+    /// See [`Codec::check`](crate::Codec::check) for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`DecodeError`] as decoding with sufficient output capacity.
+    #[inline]
+    pub fn check(input: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+        codec::check::<Self>(input.as_ref())
+    }
+
     /// Encodes `input` into `output`, returning the written prefix.
     ///
     /// # Errors
@@ -403,6 +429,15 @@ where
             backend::base64::decode_plan::<true>(input)
         } else {
             backend::base64::decode_plan::<false>(input)
+        }
+    }
+
+    #[inline]
+    fn check_with_plan_impl(input: &[u8], plan: DecodePlan) -> Result<(), DecodeError> {
+        if Alphabet::URL_SAFE {
+            backend::base64::check_with_plan::<true>(input, plan)
+        } else {
+            backend::base64::check_with_plan::<false>(input, plan)
         }
     }
 

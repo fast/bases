@@ -27,6 +27,9 @@ pub fn check<C: Codec>(reference: &Encoding) {
     for len in (0..=1025).chain([4096]) {
         let raw = payload(len);
         let expected = reference.encode(&raw);
+        assert_eq!(C::check(&expected), Ok(()));
+        let decoded_len = C::decoded_len(&expected).unwrap();
+        assert_eq!(decoded_len, len);
         assert_eq!(C::encoded_len(len).unwrap(), expected.len());
         assert_that!(C::encode(&raw), eq(&expected));
         assert_that!(C::decode(&expected), ok(eq(&raw)));
@@ -55,7 +58,7 @@ pub fn check<C: Codec>(reference: &Encoding) {
             assert_that!(&encoded[..offset], each(eq(&0xa5)));
             assert_that!(&encoded[offset + expected.len()..], each(eq(&0xa5)));
 
-            for capacity in [len, C::max_decoded_len(expected.len()), len + 32] {
+            for capacity in [decoded_len, C::max_decoded_len(expected.len()), len + 32] {
                 let mut decoded = vec![0xa5; offset + capacity + 32];
                 assert_eq!(
                     C::decode_into(
@@ -97,10 +100,10 @@ pub fn check<C: Codec>(reference: &Encoding) {
 
         // Exercise growth as well as spare capacity, with a non-ASCII string prefix.
         for reserve in [0, expected.len() + 64] {
-            let mut text = String::from("前缀:");
+            let mut text = String::from("prefix:\u{e9}");
             text.reserve(reserve);
             assert_eq!(C::encode_append(&raw, &mut text), expected);
-            assert_eq!(text, format!("前缀:{expected}"));
+            assert_eq!(text, format!("prefix:\u{e9}{expected}"));
             let mut decoded = vec![0, 0xff, 0x80];
             decoded.reserve(reserve);
             assert_eq!(C::decode_append(&expected, &mut decoded).unwrap(), len);

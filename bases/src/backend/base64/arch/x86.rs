@@ -68,6 +68,8 @@ use x86_arch::_mm256_madd_epi16;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_maddubs_epi16;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
+use x86_arch::_mm256_min_epu8;
+#[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_movemask_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_mulhi_epu16;
@@ -107,6 +109,45 @@ const LO_MASK_URL: [i8; 16] = [
 
 const ROLL_STD: [i8; 16] = [0, 0, 19, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0];
 const ROLL_URL: [i8; 16] = [0, 0, 17, 4, -65, -65, -71, -71, 0, 0, 0, 0, 0, 0, 0, 0];
+
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+const CHECK_AVX2_BATCH_LEN: usize = 256;
+
+#[inline]
+pub fn check<const URL_SAFE_ALPHABET: bool>(input: &[u8]) -> Result<usize, usize> {
+    if input.len() < 16 {
+        return Ok(0);
+    }
+
+    #[cfg(target_feature = "avx2")]
+    {
+        // SAFETY: AVX2 is enabled at compile time; the kernels bound every load by `input`.
+        unsafe { check_avx2::<URL_SAFE_ALPHABET>(input) }
+    }
+
+    #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
+    {
+        if is_x86_feature_detected!("avx2") {
+            // SAFETY: Runtime detection confirmed AVX2; all loads are bounded by `input`.
+            unsafe { check_avx2::<URL_SAFE_ALPHABET>(input) }
+        } else if is_x86_feature_detected!("ssse3") {
+            // SAFETY: Runtime detection confirmed SSSE3; all loads are bounded by `input`.
+            unsafe { check_ssse3::<URL_SAFE_ALPHABET>(input) }
+        } else {
+            Ok(0)
+        }
+    }
+
+    #[cfg(all(
+        not(target_feature = "avx2"),
+        not(feature = "std"),
+        target_feature = "ssse3"
+    ))]
+    {
+        // SAFETY: SSSE3 is enabled at compile time; every load is bounded by `input`.
+        unsafe { check_ssse3::<URL_SAFE_ALPHABET>(input) }
+    }
+}
 
 #[inline]
 pub fn encode<const URL_SAFE_ALPHABET: bool>(
@@ -477,6 +518,49 @@ unsafe fn decode_128_tables<const URL_SAFE_ALPHABET: bool>()
 
 /// # Safety
 ///
+/// Requires SSSE3 support on the current CPU.
+#[inline]
+#[target_feature(enable = "ssse3")]
+unsafe fn classify_16(
+    v: __m128i,
+    hi_mask: __m128i,
+    lo_mask: __m128i,
+    mask_0f: __m128i,
+    zero: __m128i,
+) -> (__m128i, u32) {
+    let hi = _mm_and_si128(_mm_srli_epi16(v, 4), mask_0f);
+    // PSHUFB selects the low nibble for ASCII and yields zero for any high-bit byte.
+    let chk = _mm_and_si128(_mm_shuffle_epi8(hi_mask, hi), _mm_shuffle_epi8(lo_mask, v));
+    let invalid = _mm_movemask_epi8(_mm_cmpeq_epi8(chk, zero)) as u32;
+    (hi, invalid)
+}
+
+/// # Safety
+///
+/// Requires SSSE3 support on the current CPU.
+#[cfg(not(target_feature = "avx2"))]
+#[target_feature(enable = "ssse3")]
+unsafe fn check_ssse3<const URL_SAFE_ALPHABET: bool>(input: &[u8]) -> Result<usize, usize> {
+    let mut checked = 0;
+    // SAFETY: SSSE3 is enabled by the caller and every chunk contains 16 readable bytes.
+    unsafe {
+        let (hi_mask, lo_mask, _, _, _, _) = decode_128_tables::<URL_SAFE_ALPHABET>();
+        let mask_0f = _mm_set1_epi8(0x0f);
+        let zero = _mm_setzero_si128();
+        for chunk in input.as_chunks::<16>().0 {
+            let v = _mm_loadu_si128(chunk.as_ptr().cast());
+            let (_, invalid) = classify_16(v, hi_mask, lo_mask, mask_0f, zero);
+            if invalid != 0 {
+                return Err(checked + invalid.trailing_zeros() as usize);
+            }
+            checked += 16;
+        }
+    }
+    Ok(checked)
+}
+
+/// # Safety
+///
 /// Caller must ensure `in_ptr` is valid for 16 reads and SSSE3 is enabled.
 #[inline]
 #[target_feature(enable = "ssse3")]
@@ -497,10 +581,8 @@ unsafe fn decode_chunk_16<const URL_SAFE_ALPHABET: bool>(
     // SAFETY: Caller guarantees `in_ptr` is valid for 16 readable bytes and SSSE3 is enabled.
     unsafe {
         let v = _mm_loadu_si128(in_ptr.cast());
-        let hi = _mm_and_si128(_mm_srli_epi16(v, 4), mask_0f);
-        let lo = _mm_and_si128(v, mask_0f);
-        let chk = _mm_and_si128(_mm_shuffle_epi8(hi_mask, hi), _mm_shuffle_epi8(lo_mask, lo));
-        if _mm_movemask_epi8(_mm_cmpeq_epi8(chk, zero)) != 0 {
+        let (hi, invalid) = classify_16(v, hi_mask, lo_mask, mask_0f, zero);
+        if invalid != 0 {
             return None;
         }
 
@@ -607,6 +689,188 @@ unsafe fn decode_ssse3<const URL_SAFE_ALPHABET: bool>(
 
 /// # Safety
 ///
+/// Requires AVX2 support on the current CPU.
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+#[inline]
+#[target_feature(enable = "avx2")]
+unsafe fn classify_32_bytes(
+    v: __m256i,
+    hi_mask: __m256i,
+    lo_mask: __m256i,
+    mask_0f: __m256i,
+) -> (__m256i, __m256i) {
+    let hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), mask_0f);
+    // PSHUFB selects the low nibble for ASCII and yields zero for any high-bit byte.
+    let chk = _mm256_and_si256(
+        _mm256_shuffle_epi8(hi_mask, hi),
+        _mm256_shuffle_epi8(lo_mask, v),
+    );
+    (hi, chk)
+}
+
+/// # Safety
+///
+/// Requires AVX2 support on the current CPU.
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+#[inline]
+#[target_feature(enable = "avx2")]
+unsafe fn classify_32(
+    v: __m256i,
+    hi_mask: __m256i,
+    lo_mask: __m256i,
+    mask_0f: __m256i,
+    zero: __m256i,
+) -> (__m256i, u32) {
+    // SAFETY: AVX2 is enabled by this function's target features.
+    let (hi, chk) = unsafe { classify_32_bytes(v, hi_mask, lo_mask, mask_0f) };
+    let invalid = _mm256_movemask_epi8(_mm256_cmpeq_epi8(chk, zero)) as u32;
+    (hi, invalid)
+}
+
+/// # Safety
+///
+/// Requires AVX2 support on the current CPU.
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+#[inline]
+unsafe fn check_avx2<const URL_SAFE_ALPHABET: bool>(input: &[u8]) -> Result<usize, usize> {
+    // SAFETY: The caller guarantees AVX2 support; both kernels bound every load by `input`.
+    unsafe {
+        if input.len() < 32 {
+            match input.first_chunk::<16>() {
+                Some(first) => check_avx2_16::<URL_SAFE_ALPHABET>(first),
+                None => Ok(0),
+            }
+        } else if input.len() >= CHECK_AVX2_BATCH_LEN {
+            check_avx2_bulk::<URL_SAFE_ALPHABET>(input)
+        } else {
+            check_avx2_short::<URL_SAFE_ALPHABET>(input)
+        }
+    }
+}
+
+/// # Safety
+///
+/// Requires AVX2 support on the current CPU.
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+#[inline(never)]
+unsafe fn check_avx2_bulk<const URL_SAFE_ALPHABET: bool>(input: &[u8]) -> Result<usize, usize> {
+    // SAFETY: AVX2 is enabled by the caller; slice chunks and guarded tails bound every load.
+    unsafe {
+        let (hi_128, lo_128, _, _, _, _) = decode_128_tables::<URL_SAFE_ALPHABET>();
+        let hi_mask = _mm256_set_m128i(hi_128, hi_128);
+        let lo_mask = _mm256_set_m128i(lo_128, lo_128);
+        let mask_0f = _mm256_set1_epi8(0x0f);
+        let zero = _mm256_setzero_si256();
+        // Check leading vectors before advancing to an aligned, possibly overlapping prefix.
+        for (index, block) in input[..64].as_chunks::<32>().0.iter().enumerate() {
+            let v = _mm256_loadu_si256(block.as_ptr().cast());
+            let (_, invalid) = classify_32(v, hi_mask, lo_mask, mask_0f, zero);
+            if invalid != 0 {
+                return Err(index * 32 + invalid.trailing_zeros() as usize);
+            }
+        }
+        let mut checked = 32 + input.as_ptr().align_offset(32);
+        if checked == 32 {
+            checked = 64;
+        }
+        for chunk in input[checked..].as_chunks::<CHECK_AVX2_BATCH_LEN>().0 {
+            // Valid classifications are nonzero; unsigned min preserves a zero from any block.
+            let mut aggregate = _mm256_set1_epi8(-1);
+            for block in chunk.as_chunks::<32>().0 {
+                let v = _mm256_loadu_si256(block.as_ptr().cast());
+                let (_, chk) = classify_32_bytes(v, hi_mask, lo_mask, mask_0f);
+                aggregate = _mm256_min_epu8(aggregate, chk);
+            }
+            if _mm256_movemask_epi8(_mm256_cmpeq_epi8(aggregate, zero)) != 0 {
+                // Revisit a failing batch in order to preserve the exact first error offset.
+                for (index, block) in chunk.as_chunks::<32>().0.iter().enumerate() {
+                    let v = _mm256_loadu_si256(block.as_ptr().cast());
+                    let (_, invalid) = classify_32(v, hi_mask, lo_mask, mask_0f, zero);
+                    if invalid != 0 {
+                        return Err(checked + index * 32 + invalid.trailing_zeros() as usize);
+                    }
+                }
+            }
+            checked += CHECK_AVX2_BATCH_LEN;
+        }
+        for chunk in input[checked..].as_chunks::<32>().0 {
+            let v = _mm256_loadu_si256(chunk.as_ptr().cast());
+            let (_, invalid) = classify_32(v, hi_mask, lo_mask, mask_0f, zero);
+            if invalid != 0 {
+                return Err(checked + invalid.trailing_zeros() as usize);
+            }
+            checked += 32;
+        }
+        if checked != input.len() {
+            // The prefix is valid, so an overlapping final vector cannot hide an earlier error.
+            let start = input.len() - 32;
+            let v = _mm256_loadu_si256(input[start..].as_ptr().cast());
+            let (_, invalid) = classify_32(v, hi_mask, lo_mask, mask_0f, zero);
+            if invalid != 0 {
+                return Err(start + invalid.trailing_zeros() as usize);
+            }
+        }
+    }
+    Ok(input.len())
+}
+
+/// # Safety
+///
+/// Requires AVX2 support on the current CPU.
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn check_avx2_short<const URL_SAFE_ALPHABET: bool>(input: &[u8]) -> Result<usize, usize> {
+    let mut checked = 0;
+    // SAFETY: AVX2 is enabled by the caller; full chunks and the guarded tail bound every load.
+    unsafe {
+        let (hi_128, lo_128, _, _, _, _) = decode_128_tables::<URL_SAFE_ALPHABET>();
+        let hi_mask = _mm256_set_m128i(hi_128, hi_128);
+        let lo_mask = _mm256_set_m128i(lo_128, lo_128);
+        let mask_0f = _mm256_set1_epi8(0x0f);
+        let zero = _mm256_setzero_si256();
+        for chunk in input.as_chunks::<32>().0 {
+            let v = _mm256_loadu_si256(chunk.as_ptr().cast());
+            let (_, invalid) = classify_32(v, hi_mask, lo_mask, mask_0f, zero);
+            if invalid != 0 {
+                return Err(checked + invalid.trailing_zeros() as usize);
+            }
+            checked += 32;
+        }
+        if input.len() >= 32 && checked != input.len() {
+            let start = input.len() - 32;
+            let v = _mm256_loadu_si256(input[start..].as_ptr().cast());
+            let (_, invalid) = classify_32(v, hi_mask, lo_mask, mask_0f, zero);
+            if invalid != 0 {
+                return Err(start + invalid.trailing_zeros() as usize);
+            }
+            return Ok(input.len());
+        }
+    }
+    Ok(checked)
+}
+
+/// # Safety
+///
+/// Requires AVX2 support on the current CPU.
+#[cfg(any(feature = "std", target_feature = "avx2"))]
+#[target_feature(enable = "avx2")]
+unsafe fn check_avx2_16<const URL_SAFE_ALPHABET: bool>(input: &[u8; 16]) -> Result<usize, usize> {
+    // SAFETY: AVX2 is enabled and the array contains sixteen readable bytes.
+    unsafe {
+        let (hi, lo, _, _, _, _) = decode_128_tables::<URL_SAFE_ALPHABET>();
+        let v = _mm_loadu_si128(input.as_ptr().cast());
+        let (_, invalid) = classify_16(v, hi, lo, _mm_set1_epi8(0x0f), _mm_setzero_si128());
+        if invalid != 0 {
+            Err(invalid.trailing_zeros() as usize)
+        } else {
+            Ok(16)
+        }
+    }
+}
+
+/// # Safety
+///
 /// Caller must ensure `in_ptr` is valid for 32 reads and AVX2 is enabled. Returns un-permuted
 /// lanes holding output bytes `0..12` in lane 0 and `12..24` in lane 1.
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -629,13 +893,8 @@ unsafe fn decode_chunk_32<const URL_SAFE_ALPHABET: bool>(
     // SAFETY: Caller guarantees `in_ptr` is valid for 32 readable bytes and AVX2 is enabled.
     unsafe {
         let v = _mm256_loadu_si256(in_ptr.cast());
-        let hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), mask_0f);
-        let lo = _mm256_and_si256(v, mask_0f);
-        let chk = _mm256_and_si256(
-            _mm256_shuffle_epi8(hi_mask, hi),
-            _mm256_shuffle_epi8(lo_mask, lo),
-        );
-        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(chk, zero)) != 0 {
+        let (hi, invalid) = classify_32(v, hi_mask, lo_mask, mask_0f, zero);
+        if invalid != 0 {
             return None;
         }
 
@@ -782,5 +1041,95 @@ unsafe fn decode_avx2<const URL_SAFE_ALPHABET: bool>(
             }
         }
         (done_16, had_invalid)
+    }
+}
+
+#[cfg(all(test, feature = "std", not(miri)))]
+mod tests {
+    use core::array;
+    use std::arch::is_x86_feature_detected;
+    use std::vec;
+
+    use super::*;
+
+    fn check_all_bytes<const URL_SAFE_ALPHABET: bool>(
+        check: impl Fn(&[u8]) -> Result<usize, usize>,
+    ) {
+        let alphabet: &[u8] = if URL_SAFE_ALPHABET {
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        } else {
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        };
+        let all_bytes: [u8; 256] = array::from_fn(|byte| byte as u8);
+        for len in [
+            0, 1, 15, 16, 17, 31, 32, 33, 47, 48, 49, 63, 64, 65, 95, 96, 97, 127, 128, 129, 159,
+            160, 161, 255, 256, 257, 511, 512, 513, 543, 544, 545, 1055, 1056, 1057,
+        ] {
+            // Exhaust every byte value in every lane; longer cases exercise each bulk position.
+            let bytes: &[u8] = if len <= 65 {
+                &all_bytes
+            } else {
+                b"Aaz09+/-_=!\0\x7f\x80\xff"
+            };
+            for offset in [0, 1, 7, 15, 16, 31] {
+                let mut storage = vec![0xff; offset + len + 16];
+                let input = &mut storage[offset..offset + len];
+                input.fill(b'A');
+                let processed = check(input).unwrap();
+                assert!(processed <= len && len - processed < 16);
+                for index in 0..len {
+                    for &byte in bytes {
+                        input[index] = byte;
+                        let expected = if index < processed && !alphabet.contains(&byte) {
+                            Err(index)
+                        } else {
+                            Ok(processed)
+                        };
+                        assert_eq!(
+                            check(input),
+                            expected,
+                            "length {len}, offset {offset}, index {index}, byte {byte}"
+                        );
+                    }
+                    input[index] = b'A';
+                }
+                if processed != 0 {
+                    input[processed / 2] = b'!';
+                    input[processed - 1] = 0xff;
+                    assert_eq!(check(input), Err(processed / 2));
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_feature = "avx2"))]
+    #[test]
+    fn ssse3_validation_finds_first_invalid_byte() {
+        if !is_x86_feature_detected!("ssse3") {
+            return;
+        }
+        check_all_bytes::<false>(|input| {
+            // SAFETY: Runtime feature detection above confirmed SSSE3 support.
+            unsafe { check_ssse3::<false>(input) }
+        });
+        check_all_bytes::<true>(|input| {
+            // SAFETY: Runtime feature detection above confirmed SSSE3 support.
+            unsafe { check_ssse3::<true>(input) }
+        });
+    }
+
+    #[test]
+    fn avx2_validation_finds_first_invalid_byte() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        check_all_bytes::<false>(|input| {
+            // SAFETY: Runtime feature detection above confirmed AVX2 support.
+            unsafe { check_avx2::<false>(input) }
+        });
+        check_all_bytes::<true>(|input| {
+            // SAFETY: Runtime feature detection above confirmed AVX2 support.
+            unsafe { check_avx2::<true>(input) }
+        });
     }
 }

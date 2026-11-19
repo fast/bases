@@ -26,6 +26,8 @@ use core::mem::MaybeUninit;
 
 use crate::DecodeError;
 
+const CHECK_CHUNK_LEN: usize = 8;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodePlan {
     pub required: usize,
@@ -46,6 +48,38 @@ pub fn invalid_byte_error(byte: u8, index: usize) -> DecodeError {
     } else {
         DecodeError::InvalidByte { index, byte }
     }
+}
+
+/// Finds the first invalid symbol using a table with the high bit set only for invalid entries.
+#[inline]
+pub fn find_invalid(input: &[u8], lut: &[u8; 256]) -> Option<usize> {
+    if input
+        .first()
+        .is_some_and(|&byte| lut[usize::from(byte)] & 0x80 != 0)
+    {
+        return Some(0);
+    }
+    find_invalid_blocks(input, lut)
+}
+
+// Keep block scanning out of line so early errors avoid its register pressure.
+#[inline(never)]
+fn find_invalid_blocks(input: &[u8], lut: &[u8; 256]) -> Option<usize> {
+    let (chunks, tail) = input.as_chunks::<CHECK_CHUNK_LEN>();
+    for (chunk_index, chunk) in chunks.iter().enumerate() {
+        let values = chunk
+            .iter()
+            .fold(0, |values, &byte| values | lut[usize::from(byte)]);
+        if values & 0x80 != 0 {
+            return chunk
+                .iter()
+                .position(|&byte| lut[usize::from(byte)] & 0x80 != 0)
+                .map(|offset| chunk_index * CHECK_CHUNK_LEN + offset);
+        }
+    }
+    tail.iter()
+        .position(|&byte| lut[usize::from(byte)] & 0x80 != 0)
+        .map(|offset| chunks.len() * CHECK_CHUNK_LEN + offset)
 }
 
 #[inline]

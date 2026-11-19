@@ -89,6 +89,27 @@ pub fn decode_plan(input: &[u8]) -> Result<DecodePlan, DecodeError> {
     })
 }
 
+/// Checks alphabet symbols after input length has been validated.
+#[inline]
+pub fn check_with_plan<const UPPERCASE: bool, const STRICT_CASE: bool>(
+    input: &[u8],
+    plan: DecodePlan,
+) -> Result<(), DecodeError> {
+    debug_assert_eq!(plan.data_len, input.len());
+    let lut = select_decode_lut::<UPPERCASE, STRICT_CASE>();
+    if input.len() < 32 {
+        for (index, &byte) in input.iter().enumerate() {
+            decode_value(byte, index, lut)?;
+        }
+    } else if let Some(index) = backend::find_invalid(input, lut) {
+        return Err(DecodeError::InvalidByte {
+            index,
+            byte: input[index],
+        });
+    }
+    Ok(())
+}
+
 /// Encodes `input` into `output` using Base16, returning the number of bytes written.
 #[inline(always)]
 pub fn encode<const UPPERCASE: bool>(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize {
@@ -206,18 +227,19 @@ fn decode_chunk_8(lut: &[u8; 256], chunk: &[u8; 8]) -> Option<[u8; 4]> {
 
 #[inline]
 fn decode_pair(lut: &[u8; 256], b0: u8, b1: u8, index: usize) -> Result<u8, DecodeError> {
-    let d0 = lut[usize::from(b0)];
-    if d0 & 0xf0 != 0 {
-        return Err(DecodeError::InvalidByte { index, byte: b0 });
-    }
-    let d1 = lut[usize::from(b1)];
-    if d1 & 0xf0 != 0 {
-        return Err(DecodeError::InvalidByte {
-            index: index + 1,
-            byte: b1,
-        });
-    }
+    let d0 = decode_value(b0, index, lut)?;
+    let d1 = decode_value(b1, index + 1, lut)?;
     Ok((d0 << 4) | d1)
+}
+
+#[inline]
+fn decode_value(byte: u8, index: usize, lut: &[u8; 256]) -> Result<u8, DecodeError> {
+    let value = lut[usize::from(byte)];
+    if value & 0xf0 == 0 {
+        Ok(value)
+    } else {
+        Err(DecodeError::InvalidByte { index, byte })
+    }
 }
 
 #[inline]

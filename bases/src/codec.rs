@@ -92,6 +92,61 @@ pub trait Codec: sealed::Sealed + Sized + 'static {
         Self::Profile::max_decoded_len_impl(input_len)
     }
 
+    /// Computes the exact decoded length if `input` can be decoded successfully.
+    ///
+    /// This checks the length and trailing padding shape needed to determine
+    /// the output size, but does not fully validate the input. Invalid symbols,
+    /// misplaced padding, and non-zero unused bits can go undetected. A successful
+    /// result does not guarantee that decoding will succeed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::InvalidLength`] or [`DecodeError::InvalidPadding`]
+    /// for structural errors detected while computing the output size.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bases::Base64;
+    ///
+    /// assert_eq!(Base64::max_decoded_len(4), 3);
+    /// assert_eq!(Base64::decoded_len("Zg=="), Ok(1));
+    /// // Computing the size does not validate alphabet symbols.
+    /// assert_eq!(Base64::decoded_len("!g=="), Ok(1));
+    /// ```
+    #[inline]
+    fn decoded_len(input: impl AsRef<[u8]>) -> Result<usize, DecodeError> {
+        decoded_len::<Self>(input.as_ref())
+    }
+
+    /// Validates encoded input without allocating or writing decoded bytes.
+    ///
+    /// This applies the same alphabet, padding, case, and unused-bit rules as
+    /// decoding. Unlike [`decoded_len`](Self::decoded_len), success guarantees
+    /// that the input can be decoded successfully.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`DecodeError`], including its byte offset and error
+    /// precedence, as decoding with sufficient output capacity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use bases::Base64;
+    /// use bases::DecodeError;
+    ///
+    /// assert_eq!(Base64::check("Zg=="), Ok(()));
+    /// assert_eq!(
+    ///     Base64::check("Zh=="),
+    ///     Err(DecodeError::NonCanonical { index: 1 }),
+    /// );
+    /// ```
+    #[inline]
+    fn check(input: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+        check::<Self>(input.as_ref())
+    }
+
     /// Encodes `input` into `output`, returning the written prefix.
     ///
     /// # Errors
@@ -463,6 +518,17 @@ pub fn encode_into_uninit<'output, C: Codec>(
 }
 
 #[inline]
+pub fn decoded_len<C: Codec>(input: &[u8]) -> Result<usize, DecodeError> {
+    C::Profile::decode_plan_impl(input).map(|plan| plan.required)
+}
+
+#[inline]
+pub fn check<C: Codec>(input: &[u8]) -> Result<(), DecodeError> {
+    let plan = C::Profile::decode_plan_impl(input)?;
+    C::Profile::check_with_plan_impl(input, plan)
+}
+
+#[inline]
 pub fn decode_into<'output, C: Codec>(
     input: &[u8],
     output: &'output mut [u8],
@@ -625,6 +691,7 @@ pub(crate) mod sealed {
         fn encoded_len_impl(input_len: usize) -> Option<usize>;
         fn max_decoded_len_impl(input_len: usize) -> usize;
         fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError>;
+        fn check_with_plan_impl(input: &[u8], plan: DecodePlan) -> Result<(), DecodeError>;
         fn encode_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize;
         fn encode_quantum_impl(input: &[u8], output: &mut [MaybeUninit<u8>]) -> usize;
         fn decode_with_plan_impl(

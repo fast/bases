@@ -14,6 +14,9 @@
 
 use core::mem::MaybeUninit;
 
+use bases::Base16Lower;
+use bases::Base32;
+use bases::Base64;
 use bases::Codec;
 use bases::DecodeError;
 use bases::DecodeSliceError;
@@ -25,6 +28,40 @@ use googletest::prelude::*;
 
 use crate::payload;
 use crate::streaming;
+
+#[test]
+fn validation_preserves_structural_and_symbol_error_precedence() {
+    assert_eq!(
+        Base64::check("!"),
+        Err(DecodeError::InvalidLength { length: 1 }),
+    );
+    assert_eq!(
+        Base64::check("!==="),
+        Err(DecodeError::InvalidPadding { index: 1 }),
+    );
+    assert_eq!(
+        Base32::check("!Y====="),
+        Err(DecodeError::InvalidLength { length: 7 }),
+    );
+    assert_eq!(
+        Base32::check("!Y====AA"),
+        Err(DecodeError::InvalidByte {
+            index: 0,
+            byte: b'!'
+        }),
+    );
+    assert_eq!(
+        Base64::check("Zh==!!!!"),
+        Err(DecodeError::InvalidPadding { index: 2 }),
+    );
+    assert_eq!(
+        Base16Lower::check("=="),
+        Err(DecodeError::InvalidByte {
+            index: 0,
+            byte: b'='
+        }),
+    );
+}
 
 #[test]
 fn optional_padding_preserves_alphabet_and_trailing_bit_errors() {
@@ -72,8 +109,17 @@ pub fn differential<C: Codec>(reference: &Encoding) {
         } else {
             reference.decode(wire).map_err(|_| ())
         };
-        let actual = C::decode_into(wire, &mut output).map_err(|_| ());
-        assert_eq!(actual.as_deref(), expected.as_deref(), "wire: {wire:?}");
+        let decoded = C::decode_into(wire, &mut output);
+        assert_eq!(
+            C::check(wire).map_err(DecodeSliceError::from),
+            decoded.as_ref().map(|_| ()).map_err(|&error| error),
+            "validation wire: {wire:?}"
+        );
+        assert_eq!(
+            decoded.map_err(|_| ()).as_deref(),
+            expected.as_deref(),
+            "wire: {wire:?}"
+        );
         in_place.clear();
         in_place.extend_from_slice(wire);
         let actual = C::decode_in_place(&mut in_place).map_err(|_| ());
@@ -109,6 +155,29 @@ pub fn differential<C: Codec>(reference: &Encoding) {
 }
 
 pub fn errors<C: Codec>(reference: &Encoding) {
+    for len in [
+        8, 15, 16, 17, 19, 20, 21, 23, 24, 25, 64, 159, 160, 164, 1024,
+    ] {
+        let mut bad = reference.encode(&payload(len)).into_bytes();
+        let last = bad.iter().rposition(|&byte| byte != b'=').unwrap();
+        for first in [0, last / 2] {
+            let original = bad[first];
+            bad[first] = b'!';
+            bad[last] = 0xff;
+            let expected = DecodeError::InvalidByte {
+                index: first,
+                byte: b'!',
+            };
+            assert_eq!(C::check(&bad), Err(expected));
+            let mut output = vec![0; C::max_decoded_len(bad.len())];
+            assert_eq!(
+                C::decode_into(&bad, &mut output),
+                Err(DecodeSliceError::Decode(expected)),
+            );
+            bad[first] = original;
+        }
+    }
+
     let wire = reference.encode(&payload(65));
     for index in 0..wire.trim_end_matches('=').len() {
         let mut bad = wire.as_bytes().to_vec();
@@ -148,6 +217,7 @@ pub fn errors<C: Codec>(reference: &Encoding) {
 }
 
 fn assert_error<C: Codec>(wire: &[u8], expected: DecodeError) {
+    assert_eq!(C::check(wire), Err(expected));
     let mut output = vec![0; C::max_decoded_len(wire.len())];
     assert_that!(
         C::decode_into(wire, &mut output),

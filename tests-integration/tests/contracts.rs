@@ -26,6 +26,7 @@ mod serialization;
 mod streaming;
 
 use bases::Codec;
+use bases::DecodeSliceError;
 use bases::base16;
 use bases::base32;
 use bases::base64;
@@ -66,11 +67,19 @@ fn payload(len: usize) -> Vec<u8> {
 fn optional_padding_accepts_only_canonical_tail_lengths() {
     fn check_decode<C: Codec>(wire: &str, expected: Option<&[u8]>) {
         let mut out = vec![0; C::max_decoded_len(wire.len())];
+        let decoded = C::decode_into(wire, &mut out);
         assert_eq!(
-            C::decode_into(wire, &mut out).ok().as_deref(),
-            expected,
+            C::check(wire).map_err(DecodeSliceError::from),
+            decoded.as_ref().map(|_| ()).map_err(|&error| error),
             "{wire}"
         );
+        assert_eq!(decoded.ok().as_deref(), expected, "{wire}");
+        if let Some(raw) = expected {
+            let capacity = C::decoded_len(wire).unwrap();
+            assert_eq!(capacity, raw.len(), "{wire}");
+            let mut exact = vec![0; capacity];
+            assert_eq!(C::decode_into(wire, &mut exact).unwrap(), raw);
+        }
         let mut in_place = wire.as_bytes().to_vec();
         assert_eq!(
             C::decode_in_place(&mut in_place).ok().as_deref(),

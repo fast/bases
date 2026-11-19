@@ -26,6 +26,27 @@ mod wasm32;
 ))]
 mod x86;
 
+/// Checks a SIMD prefix, returning its length or the first invalid byte offset.
+#[inline]
+pub fn check<const URL_SAFE_ALPHABET: bool>(input: &[u8]) -> Result<usize, usize> {
+    if cfg!(miri) {
+        return Ok(0);
+    }
+
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
+    ))]
+    {
+        return x86::check::<URL_SAFE_ALPHABET>(input);
+    }
+
+    #[allow(unreachable_code)]
+    let _ = input;
+    #[allow(unreachable_code)]
+    Ok(0)
+}
+
 #[inline]
 pub fn encode<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
