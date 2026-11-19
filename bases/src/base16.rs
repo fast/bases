@@ -144,6 +144,31 @@ where
         backend::base16::max_decoded_len(input_len)
     }
 
+    /// Computes the exact decoded length if `input` can be decoded successfully.
+    ///
+    /// This does not fully validate the input. See
+    /// [`Codec::decoded_len`](crate::Codec::decoded_len).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::InvalidLength`] if the input length is odd.
+    #[inline]
+    pub fn decoded_len(input: impl AsRef<[u8]>) -> Result<usize, DecodeError> {
+        codec::decoded_len::<Self>(input.as_ref())
+    }
+
+    /// Validates encoded input without allocating or writing decoded bytes.
+    ///
+    /// See [`Codec::check`](crate::Codec::check) for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`DecodeError`] as decoding with sufficient output capacity.
+    #[inline]
+    pub fn check(input: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+        codec::check::<Self>(input.as_ref())
+    }
+
     /// Encodes `input` into `output`, returning the written prefix.
     ///
     /// # Errors
@@ -371,6 +396,16 @@ where
     #[inline]
     fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
         backend::base16::decode_plan(input)
+    }
+
+    #[inline]
+    fn check_with_plan_impl(input: &[u8], plan: DecodePlan) -> Result<(), DecodeError> {
+        match (Case::UPPERCASE, DecodeCase::STRICT) {
+            (true, true) => backend::base16::check_with_plan::<true, true>(input, plan),
+            (true, false) => backend::base16::check_with_plan::<true, false>(input, plan),
+            (false, true) => backend::base16::check_with_plan::<false, true>(input, plan),
+            (false, false) => backend::base16::check_with_plan::<false, false>(input, plan),
+        }
     }
 
     #[inline(always)]

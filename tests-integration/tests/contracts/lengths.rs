@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use bases::Base16Lower;
+use bases::Base32;
+use bases::Base64;
+use bases::Base64Unpadded;
 use bases::Codec;
+use bases::DecodeError;
 use bases::EncodeError;
 use data_encoding::Encoding;
 
@@ -28,6 +33,44 @@ pub fn check<C: Codec>(reference: &Encoding) {
         encoded_quantum,
         reference.specification().padding.is_some(),
     );
+}
+
+#[test]
+fn decoded_length_reports_structural_errors() {
+    assert_eq!(
+        Base16Lower::decoded_len("6"),
+        Err(DecodeError::InvalidLength { length: 1 }),
+    );
+    assert_eq!(
+        Base64::decoded_len("!"),
+        Err(DecodeError::InvalidLength { length: 1 }),
+    );
+    assert_eq!(
+        Base64::decoded_len("A==="),
+        Err(DecodeError::InvalidPadding { index: 1 }),
+    );
+    assert_eq!(
+        Base32::decoded_len("MZXW6Y=="),
+        Err(DecodeError::InvalidPadding { index: 6 }),
+    );
+}
+
+#[test]
+fn decoded_length_does_not_fully_validate_input() {
+    fn check<C: Codec>(wire: &str, capacity: usize) {
+        assert_eq!(C::decoded_len(wire), Ok(capacity));
+        let mut output = vec![0; capacity];
+        assert!(C::decode_into(wire, &mut output).is_err());
+    }
+
+    check::<Base16Lower>("g0", 1);
+    check::<Base32>("!Y======", 1);
+    check::<Base32>("my======", 1);
+    check::<Base32>("MZ======", 1);
+    check::<Base64>("!g==", 1);
+    check::<Base64>("Zh==", 1);
+    check::<Base64>("Zg==AAAA", 6);
+    check::<Base64Unpadded>("Zg==", 3);
 }
 
 fn assert_lengths<C: Codec>(input_quantum: usize, encoded_quantum: usize, padded: bool) {

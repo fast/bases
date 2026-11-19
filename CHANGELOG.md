@@ -6,6 +6,7 @@ All significant changes to this project will be documented in this file.
 
 ### Features
 
+* Add `decoded_len` for exact buffer sizing and `check` for validation without decoded output to all profiles and the `Codec` trait. `decoded_len` checks length and trailing padding shape without fully validating the input; `check` preserves decoding errors and byte offsets.
 * Add `policy::PaddedOptional` and `policy::UnpaddedOptional` for Base32 and Base64. Both accept complete padding or none when decoding and emit padded and unpadded output, respectively.
 * Add `encode_into_uninit` and `decode_into_uninit` to all profiles and the `Codec` trait. They write into caller-provided `MaybeUninit<u8>` storage and return the initialized prefix.
 

@@ -189,6 +189,32 @@ where
         backend::base32::max_decoded_len(input_len)
     }
 
+    /// Computes the exact decoded length if `input` can be decoded successfully.
+    ///
+    /// This does not fully validate the input. See
+    /// [`Codec::decoded_len`](crate::Codec::decoded_len).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecodeError::InvalidLength`] or [`DecodeError::InvalidPadding`]
+    /// for structural errors detected while computing the output size.
+    #[inline]
+    pub fn decoded_len(input: impl AsRef<[u8]>) -> Result<usize, DecodeError> {
+        codec::decoded_len::<Self>(input.as_ref())
+    }
+
+    /// Validates encoded input without allocating or writing decoded bytes.
+    ///
+    /// See [`Codec::check`](crate::Codec::check) for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`DecodeError`] as decoding with sufficient output capacity.
+    #[inline]
+    pub fn check(input: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+        codec::check::<Self>(input.as_ref())
+    }
+
     /// Encodes `input` into `output`, returning the written prefix.
     ///
     /// # Errors
@@ -425,6 +451,34 @@ where
             backend::base32::decode_plan::<true>(input)
         } else {
             backend::base32::decode_plan::<false>(input)
+        }
+    }
+
+    #[inline]
+    fn check_with_plan_impl(input: &[u8], plan: DecodePlan) -> Result<(), DecodeError> {
+        match (Alphabet::EXTENDED_HEX, Case::UPPERCASE, DecodeCase::STRICT) {
+            (false, false, false) => {
+                backend::base32::check_with_plan::<false, false, false>(input, plan)
+            }
+            (false, false, true) => {
+                backend::base32::check_with_plan::<false, false, true>(input, plan)
+            }
+            (false, true, false) => {
+                backend::base32::check_with_plan::<false, true, false>(input, plan)
+            }
+            (false, true, true) => {
+                backend::base32::check_with_plan::<false, true, true>(input, plan)
+            }
+            (true, false, false) => {
+                backend::base32::check_with_plan::<true, false, false>(input, plan)
+            }
+            (true, false, true) => {
+                backend::base32::check_with_plan::<true, false, true>(input, plan)
+            }
+            (true, true, false) => {
+                backend::base32::check_with_plan::<true, true, false>(input, plan)
+            }
+            (true, true, true) => backend::base32::check_with_plan::<true, true, true>(input, plan),
         }
     }
 

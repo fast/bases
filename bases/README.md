@@ -52,7 +52,7 @@ For example, use `base64::Base64<base64::Standard, policy::UnpaddedOptional>` fo
 
 ## API layers and features
 
-- **Caller buffers (`no_std`):** `encoded_len`, `max_decoded_len`, `encode_into`, `decode_into`, `decode_in_place`, and `decode_array` operate without allocation. Concrete profiles provide `const fn` constructors and sizing methods.
+- **Sizing, validation, and caller buffers (`no_std`):** `encoded_len`, `max_decoded_len`, `decoded_len`, `check`, `encode_into`, `decode_into`, `decode_in_place`, and `decode_array` operate without allocation. Concrete profiles provide `const fn` constructors, `encoded_len`, and `max_decoded_len`.
 - **Owned output (`alloc`):** `encode` and `decode` return `String` and `Vec<u8>`; `encode_append` and transactional `decode_append` extend existing buffers.
 - **Streaming (`no_std` / `std`):** `Encoder<C>` and `Decoder<C>` process arbitrarily chunked input while retaining at most one partial quantum. The `std` feature adds `io::EncoderWriter` and `io::DecoderReader` for `std::io::Write` and `std::io::Read`.
 - **Formatting (`no_std`):** `display` (`EncodedDisplay`) and `HexDisplay` (`{:x}` and `{:X}` only) write encoded text through `core::fmt` without an intermediate string.
@@ -64,6 +64,14 @@ For example, use `base64::Base64<base64::Standard, policy::UnpaddedOptional>` fo
 | `alloc`   | Adds owned and append helpers for `String` and `Vec<u8>`.                                          |
 | `std`     | Enables `alloc`, I/O adapters, and runtime x86/x86_64 CPU feature detection.                       |
 | `serde`   | Adds `serde_core` serialization and fixed-array deserialization, including without an allocator.   |
+
+## Decoding buffer sizes and validation
+
+Use `max_decoded_len(input.len())` for an upper bound based only on the encoded length, or `decoded_len(input)` to inspect the input's length and trailing padding shape for exact sizing. For example, `Base64::max_decoded_len(4)` returns `3`, while `Base64::decoded_len("Zg==")` returns `Ok(1)`.
+
+A successful `decoded_len` result guarantees the exact length only if decoding succeeds. It does not fully validate the input: invalid alphabet symbols, misplaced padding, and non-zero unused bits can go undetected. Decoding still performs full validation.
+
+Use `check(input)` when only validation is needed, for example before storing or forwarding an encoded field. It applies the selected profile's complete decoding rules without allocating or writing decoded bytes, and returns the same errors and byte offsets as decoding with sufficient output capacity. `Base64::check("Zg==")` succeeds, while `Base64::check("Zh==")` reports `DecodeError::NonCanonical { index: 1 }`. Calling `check` immediately before decoding normally duplicates validation work.
 
 ## Uninitialized output buffers
 
