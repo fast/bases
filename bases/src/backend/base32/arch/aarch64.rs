@@ -172,38 +172,48 @@ unsafe fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input_len: usize,
 ) {
     let alpha_ptr = select_alphabet::<EXTENDED_HEX, UPPERCASE>().as_ptr();
-    // SAFETY: Caller guarantees sufficient readable/writable bytes and `alpha_ptr` points to 32
-    // bytes.
-    unsafe {
-        let alphabet_tbl = uint8x16x2_t(vld1q_u8(alpha_ptr), vld1q_u8(alpha_ptr.add(16)));
-        let w_shuf = vld1q_u8(W_SHUF.as_ptr());
-        let even_shifts: int16x8_t = vld1q_s16(EVEN_SHIFTS.as_ptr());
-        let odd_shifts: int16x8_t = vld1q_s16(ODD_SHIFTS.as_ptr());
-        let wide_chunks = ((input_len - 6) / 10).min(chunks);
-        for _ in 0..wide_chunks {
-            let raw = vld1q_u8(in_ptr);
-            let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
+    // SAFETY: `alpha_ptr` points to 32 bytes and the remaining pointers reference 16-byte static
+    // constant arrays.
+    let (alphabet_tbl, w_shuf, even_shifts, odd_shifts) = unsafe {
+        (
+            uint8x16x2_t(vld1q_u8(alpha_ptr), vld1q_u8(alpha_ptr.add(16))),
+            vld1q_u8(W_SHUF.as_ptr()),
+            vld1q_s16(EVEN_SHIFTS.as_ptr()),
+            vld1q_s16(ODD_SHIFTS.as_ptr()),
+        )
+    };
+    let wide_chunks = ((input_len - 6) / 10).min(chunks);
+    for _ in 0..wide_chunks {
+        // SAFETY: `wide_chunks` guarantees 16 readable bytes at `in_ptr`.
+        let raw = unsafe { vld1q_u8(in_ptr) };
+        let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
+        // SAFETY: Caller guarantees `chunks * 16` writable bytes at `out_ptr`, and advancing by 10
+        // and 16 bytes stays within both buffers.
+        unsafe {
             vst1q_u8(out_ptr, ascii);
             in_ptr = in_ptr.add(10);
             out_ptr = out_ptr.add(16);
         }
-        if wide_chunks < chunks {
-            // The last two quanta need only ten readable bytes, even at an allocation boundary.
-            let low = ptr::read_unaligned(in_ptr.cast::<u64>());
-            let high = u64::from(ptr::read_unaligned(in_ptr.add(8).cast::<u16>()));
-            let raw = vreinterpretq_u8_u64(vsetq_lane_u64::<1>(high, vdupq_n_u64(low)));
-            let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
-            vst1q_u8(out_ptr, ascii);
-        }
+    }
+    if wide_chunks < chunks {
+        // The last two quanta need only ten readable bytes, even at an allocation boundary.
+        // SAFETY: Caller guarantees at least 10 remaining readable bytes at `in_ptr`.
+        let (low, high) = unsafe {
+            (
+                ptr::read_unaligned(in_ptr.cast::<u64>()),
+                u64::from(ptr::read_unaligned(in_ptr.add(8).cast::<u16>())),
+            )
+        };
+        let raw = vreinterpretq_u8_u64(vsetq_lane_u64::<1>(high, vdupq_n_u64(low)));
+        let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
+        // SAFETY: Caller guarantees 16 remaining writable bytes at `out_ptr`.
+        unsafe { vst1q_u8(out_ptr, ascii) };
     }
 }
 
-/// # Safety
-///
-/// Requires NEON target feature.
 #[inline]
 #[target_feature(enable = "neon")]
-unsafe fn encode_chunk_neon(
+fn encode_chunk_neon(
     raw: uint8x16_t,
     alphabet: uint8x16x2_t,
     shuffle: uint8x16_t,
@@ -243,65 +253,76 @@ unsafe fn decode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STR
     let wide_chunks = (out_len.saturating_sub(6) / 10).min(chunks);
     let mut done = 0;
 
-    // SAFETY: Caller guarantees `chunks * 16` reads at `in_ptr`, `out_len >= chunks * 10` writes at
-    // `out_ptr`, non-overtaking pointer advancement for in-place decoding, and 16-byte static
-    // lookup tables.
-    unsafe {
-        let hi_mask_tbl = vld1q_u8(hi_mask_ptr);
-        let lo_mask_tbl = vld1q_u8(lo_mask_ptr);
-        let roll_tbl = vld1q_u8(roll_ptr);
-        let pack_shuf = vld1q_u8(PACK_SHUF.as_ptr());
-        let mask_0f = vdupq_n_u8(0x0f);
-        let mask_001f = vdupq_n_u16(0x001f);
-        let mask_03ff = vdupq_n_u32(0x03ff);
+    // SAFETY: All four pointers reference 16-byte static lookup tables.
+    let (hi_mask_tbl, lo_mask_tbl, roll_tbl, pack_shuf) = unsafe {
+        (
+            vld1q_u8(hi_mask_ptr),
+            vld1q_u8(lo_mask_ptr),
+            vld1q_u8(roll_ptr),
+            vld1q_u8(PACK_SHUF.as_ptr()),
+        )
+    };
+    let mask_0f = vdupq_n_u8(0x0f);
+    let mask_001f = vdupq_n_u16(0x001f);
+    let mask_03ff = vdupq_n_u32(0x03ff);
 
-        while done + 2 <= wide_chunks {
-            let v0 = vld1q_u8(in_ptr);
-            let v1 = vld1q_u8(in_ptr.add(16));
-            let (hi0, chk0) = classify_chunk_16_neon(v0, hi_mask_tbl, lo_mask_tbl, mask_0f);
-            let (hi1, chk1) = classify_chunk_16_neon(v1, hi_mask_tbl, lo_mask_tbl, mask_0f);
-            if vminvq_u8(vminq_u8(chk0, chk1)) == 0 {
-                return done;
-            }
-            let res0 = pack_chunk_16_neon(v0, hi0, roll_tbl, pack_shuf, mask_001f, mask_03ff);
-            let res1 = pack_chunk_16_neon(v1, hi1, roll_tbl, pack_shuf, mask_001f, mask_03ff);
+    while done + 2 <= wide_chunks {
+        // SAFETY: `done + 2 <= wide_chunks <= chunks` guarantees 32 readable bytes at `in_ptr`.
+        let (v0, v1) = unsafe { (vld1q_u8(in_ptr), vld1q_u8(in_ptr.add(16))) };
+        let (hi0, chk0) = classify_chunk_16_neon(v0, hi_mask_tbl, lo_mask_tbl, mask_0f);
+        let (hi1, chk1) = classify_chunk_16_neon(v1, hi_mask_tbl, lo_mask_tbl, mask_0f);
+        if vminvq_u8(vminq_u8(chk0, chk1)) == 0 {
+            return done;
+        }
+        let res0 = pack_chunk_16_neon(v0, hi0, roll_tbl, pack_shuf, mask_001f, mask_03ff);
+        let res1 = pack_chunk_16_neon(v1, hi1, roll_tbl, pack_shuf, mask_001f, mask_03ff);
+        // SAFETY: `done + 2 <= wide_chunks <= chunks` guarantees `done * 10 + 26 <= out_len`,
+        // in-place writes lag behind `in_ptr`, and advancing `in_ptr`/`out_ptr` by 32 and 20 bytes
+        // stays within both buffers.
+        unsafe {
             vst1q_u8(out_ptr, res0);
             vst1q_u8(out_ptr.add(10), res1);
             in_ptr = in_ptr.add(32);
             out_ptr = out_ptr.add(20);
-            done += 2;
         }
+        done += 2;
+    }
 
-        while done < chunks {
-            let v = vld1q_u8(in_ptr);
-            let (hi, chk) = classify_chunk_16_neon(v, hi_mask_tbl, lo_mask_tbl, mask_0f);
-            if vminvq_u8(chk) == 0 {
-                return done;
+    while done < chunks {
+        // SAFETY: `done < chunks` guarantees 16 readable bytes at `in_ptr`.
+        let v = unsafe { vld1q_u8(in_ptr) };
+        let (hi, chk) = classify_chunk_16_neon(v, hi_mask_tbl, lo_mask_tbl, mask_0f);
+        if vminvq_u8(chk) == 0 {
+            return done;
+        }
+        let res = pack_chunk_16_neon(v, hi, roll_tbl, pack_shuf, mask_001f, mask_03ff);
+        if done < wide_chunks {
+            // SAFETY: `done < wide_chunks` guarantees `done * 10 + 16 <= out_len`, and in-place
+            // writes lag behind `in_ptr`.
+            unsafe { vst1q_u8(out_ptr, res) };
+        } else {
+            let lo = vget_low_u8(res);
+            let hi16 = vgetq_lane_u16::<4>(vreinterpretq_u16_u8(res));
+            // SAFETY: `done < chunks` guarantees 10 writable bytes at `out_ptr`, and this chunk's
+            // input was already loaded so in-place writes do not overwrite unread input.
+            unsafe {
+                vst1_u8(out_ptr, lo);
+                ptr::write_unaligned(out_ptr.add(8).cast::<u16>(), hi16);
             }
-            let res = pack_chunk_16_neon(v, hi, roll_tbl, pack_shuf, mask_001f, mask_03ff);
-            if done < wide_chunks {
-                vst1q_u8(out_ptr, res);
-            } else {
-                vst1_u8(out_ptr, vget_low_u8(res));
-                ptr::write_unaligned(
-                    out_ptr.add(8).cast::<u16>(),
-                    vgetq_lane_u16::<4>(vreinterpretq_u16_u8(res)),
-                );
-            }
+        }
+        // SAFETY: Advancing by 16 and 10 bytes stays within the caller-guaranteed buffers.
+        unsafe {
             in_ptr = in_ptr.add(16);
             out_ptr = out_ptr.add(10);
-            done += 1;
         }
+        done += 1;
     }
     done
 }
 
-/// # Safety
-///
-/// Requires NEON target feature.
 #[inline]
 #[target_feature(enable = "neon")]
-unsafe fn classify_chunk_16_neon(
+fn classify_chunk_16_neon(
     v: uint8x16_t,
     hi_mask_tbl: uint8x16_t,
     lo_mask_tbl: uint8x16_t,
@@ -313,12 +334,9 @@ unsafe fn classify_chunk_16_neon(
     (hi, chk)
 }
 
-/// # Safety
-///
-/// Requires NEON target feature.
 #[inline]
 #[target_feature(enable = "neon")]
-unsafe fn pack_chunk_16_neon(
+fn pack_chunk_16_neon(
     v: uint8x16_t,
     hi: uint8x16_t,
     roll_tbl: uint8x16_t,
