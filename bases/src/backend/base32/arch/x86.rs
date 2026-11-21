@@ -298,12 +298,9 @@ pub fn decode_in_place<const EXTENDED_HEX: bool, const UPPERCASE: bool, const ST
     (done_16 * 16, done_16 * 10)
 }
 
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn encode_128_consts<const EXTENDED_HEX: bool, const UPPERCASE: bool>() -> (
+fn encode_128_consts<const EXTENDED_HEX: bool, const UPPERCASE: bool>() -> (
     __m128i,
     __m128i,
     __m128i,
@@ -500,16 +497,10 @@ unsafe fn encode_avx2<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     (input_index, output_index)
 }
 
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn decode_128_tables<
-    const EXTENDED_HEX: bool,
-    const UPPERCASE: bool,
-    const STRICT_CASE: bool,
->() -> (__m128i, __m128i, __m128i, __m128i) {
+fn decode_128_tables<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CASE: bool>()
+-> (__m128i, __m128i, __m128i, __m128i) {
     let hi = select_hi_mask::<UPPERCASE, STRICT_CASE>();
     let lo = if EXTENDED_HEX {
         LO_MASK_HEX

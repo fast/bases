@@ -228,12 +228,9 @@ pub fn decode_in_place<const UPPERCASE: bool, const STRICT_CASE: bool>(
     (done_32 * 32, done_32 * 16)
 }
 
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn hex_table_128<const UPPERCASE: bool>() -> __m128i {
+fn hex_table_128<const UPPERCASE: bool>() -> __m128i {
     if UPPERCASE {
         _mm_setr_epi8(
             b'0' as i8, b'1' as i8, b'2' as i8, b'3' as i8, b'4' as i8, b'5' as i8, b'6' as i8,
@@ -351,14 +348,9 @@ unsafe fn encode_avx2<const UPPERCASE: bool>(
     (input_index, output_index)
 }
 
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn decode_nibbles_128<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    v: __m128i,
-) -> __m128i {
+fn decode_nibbles_128<const UPPERCASE: bool, const STRICT_CASE: bool>(v: __m128i) -> __m128i {
     // Saturation maps digits to 0-9 and letters to 10-15; all other bytes stay above 15.
     let digits = _mm_sub_epi8(
         _mm_subs_epu8(
@@ -443,15 +435,10 @@ unsafe fn decode_ssse3<const UPPERCASE: bool, const STRICT_CASE: bool>(
     done
 }
 
-/// # Safety
-///
-/// Requires AVX2 support on the current CPU.
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn decode_nibbles_256<const UPPERCASE: bool, const STRICT_CASE: bool>(
-    v: __m256i,
-) -> __m256i {
+fn decode_nibbles_256<const UPPERCASE: bool, const STRICT_CASE: bool>(v: __m256i) -> __m256i {
     let digits = _mm256_sub_epi8(
         _mm256_subs_epu8(
             _mm256_add_epi8(v, _mm256_set1_epi8(!b'9' as i8)),

@@ -298,12 +298,9 @@ pub fn decode_in_place<const URL_SAFE_ALPHABET: bool>(
     (done_16 * 16, done_16 * 12, had_invalid)
 }
 
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn encode_128_consts<const URL_SAFE_ALPHABET: bool>() -> (
+fn encode_128_consts<const URL_SAFE_ALPHABET: bool>() -> (
     __m128i,
     __m128i,
     __m128i,
@@ -477,12 +474,9 @@ unsafe fn encode_avx2<const URL_SAFE_ALPHABET: bool>(
     (input_index, output_index)
 }
 
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn decode_128_tables<const URL_SAFE_ALPHABET: bool>()
+fn decode_128_tables<const URL_SAFE_ALPHABET: bool>()
 -> (__m128i, __m128i, __m128i, __m128i, __m128i, __m128i) {
     let hi_mask = _mm_setr_epi8(0, 0, 1, 2, 4, 8, 4, 16, 0, 0, 0, 0, 0, 0, 0, 0);
     let lo = if URL_SAFE_ALPHABET {
@@ -516,12 +510,9 @@ unsafe fn decode_128_tables<const URL_SAFE_ALPHABET: bool>()
     )
 }
 
-/// # Safety
-///
-/// Requires SSSE3 support on the current CPU.
 #[inline]
 #[target_feature(enable = "ssse3")]
-unsafe fn classify_16(
+fn classify_16(
     v: __m128i,
     hi_mask: __m128i,
     lo_mask: __m128i,
@@ -687,13 +678,10 @@ unsafe fn decode_ssse3<const URL_SAFE_ALPHABET: bool>(
     (done, false)
 }
 
-/// # Safety
-///
-/// Requires AVX2 support on the current CPU.
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn classify_32_bytes(
+fn classify_32_bytes(
     v: __m256i,
     hi_mask: __m256i,
     lo_mask: __m256i,
@@ -708,21 +696,17 @@ unsafe fn classify_32_bytes(
     (hi, chk)
 }
 
-/// # Safety
-///
-/// Requires AVX2 support on the current CPU.
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 #[inline]
 #[target_feature(enable = "avx2")]
-unsafe fn classify_32(
+fn classify_32(
     v: __m256i,
     hi_mask: __m256i,
     lo_mask: __m256i,
     mask_0f: __m256i,
     zero: __m256i,
 ) -> (__m256i, u32) {
-    // SAFETY: AVX2 is enabled by this function's target features.
-    let (hi, chk) = unsafe { classify_32_bytes(v, hi_mask, lo_mask, mask_0f) };
+    let (hi, chk) = classify_32_bytes(v, hi_mask, lo_mask, mask_0f);
     let invalid = _mm256_movemask_epi8(_mm256_cmpeq_epi8(chk, zero)) as u32;
     (hi, invalid)
 }
