@@ -493,29 +493,23 @@ mod tests {
             return;
         }
         // Runtime dispatch selects AVX2 on modern x86 hosts; exercise SSSE3 directly.
+        let check = |slice: &[u8]| {
+            // SAFETY: Runtime feature detection above confirmed SSSE3 support.
+            unsafe { validate_ssse3(slice, &HI_MASK, &LO_MASK_STD) }
+        };
         let mut full = [b'A'; 95];
         for len in [16, 23, 32, 41, 64, 95] {
             let buf = &mut full[..len];
             buf.fill(b'A');
-            // SAFETY: Runtime feature detection above confirmed SSSE3 support.
-            assert_eq!(
-                unsafe { validate_ssse3(buf, &HI_MASK, &LO_MASK_STD) },
-                Ok(len)
-            );
+            assert_eq!(check(buf), Ok(len));
 
             let mid = len / 2;
             buf[mid] = b'!';
             buf[len - 1] = 0xff;
-            assert_eq!(
-                unsafe { validate_ssse3(buf, &HI_MASK, &LO_MASK_STD) },
-                Err(mid)
-            );
+            assert_eq!(check(buf), Err(mid));
 
             buf[mid] = b'A';
-            assert_eq!(
-                unsafe { validate_ssse3(buf, &HI_MASK, &LO_MASK_STD) },
-                Err(len - 1)
-            );
+            assert_eq!(check(buf), Err(len - 1));
         }
     }
 }
