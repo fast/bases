@@ -281,6 +281,53 @@ pub fn register(runner: &mut Runner) {
             ],
         );
     }
+
+    for (size, rounds) in [(32, 90_000_000), (16_384, 380_000)] {
+        runner.case(
+            &format!("base16/validate/{size}"),
+            rounds,
+            size,
+            &lowercase,
+            Direction::Decode,
+            &[
+                (
+                    "bases",
+                    &validated(|input| Base16Lower::validate(input).is_ok()),
+                ),
+                ("faster-hex", &validated(faster_hex::hex_check)),
+                (
+                    "const-hex",
+                    &validated(|input| const_hex::check(input).is_ok()),
+                ),
+            ],
+        );
+    }
+    for (size, rounds) in [(32, 60_000_000), (16_384, 400_000)] {
+        runner.case(
+            &format!("base32/validate/{size}"),
+            rounds,
+            size,
+            &data_encoding::BASE32,
+            Direction::Decode,
+            &[("bases", &validated(|input| Base32::validate(input).is_ok()))],
+        );
+    }
+    for (size, rounds) in [(32, 75_000_000), (16_384, 420_000)] {
+        runner.case(
+            &format!("base64/validate/{size}"),
+            rounds,
+            size,
+            &standard,
+            Direction::Decode,
+            &[
+                ("bases", &validated(|input| Base64::validate(input).is_ok())),
+                (
+                    "base64-simd",
+                    &validated(|input| base64_simd::STANDARD.check(input).is_ok()),
+                ),
+            ],
+        );
+    }
 }
 
 fn owned_cases<C: Codec>(
@@ -414,5 +461,15 @@ fn rejected(at_end: bool, reject: impl Fn(&[u8], &mut [u8]) -> bool) -> impl Fn(
             failed = black_box(reject(black_box(&input), black_box(&mut output)));
         }
         assert!(failed);
+    }
+}
+
+fn validated(validate: impl Fn(&[u8]) -> bool) -> impl Fn(&Fixture, usize) {
+    move |fixture, rounds| {
+        let mut ok = false;
+        for _ in 0..rounds {
+            ok = black_box(validate(black_box(&fixture.input)));
+        }
+        assert!(ok);
     }
 }

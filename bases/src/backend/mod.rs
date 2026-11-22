@@ -22,8 +22,11 @@ pub mod base16;
 pub mod base32;
 pub mod base64;
 
+mod validate;
+
 use core::mem::MaybeUninit;
 
+pub use self::validate::validate_symbols;
 use crate::DecodeError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

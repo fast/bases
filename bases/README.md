@@ -52,7 +52,7 @@ For example, use `base64::Base64<base64::Standard, policy::UnpaddedOptional>` fo
 
 ## API layers and features
 
-- **Caller buffers (`no_std`):** `encoded_len`, `max_decoded_len`, `encode_into`, `decode_into`, `decode_in_place`, and `decode_array` operate without allocation. Concrete profiles provide `const fn` constructors and sizing methods.
+- **Sizing, validation, and caller buffers (`no_std`):** `encoded_len`, `max_decoded_len`, `validate`, `encode_into`, `decode_into`, `decode_in_place`, and `decode_array` operate without allocation. Concrete profiles provide `const fn` constructors and sizing methods.
 - **Owned output (`alloc`):** `encode` and `decode` return `String` and `Vec<u8>`; `encode_append` and transactional `decode_append` extend existing buffers.
 - **Streaming (`no_std` / `std`):** `Encoder<C>` and `Decoder<C>` process arbitrarily chunked input while retaining at most one partial quantum. The `std` feature adds `io::EncoderWriter` and `io::DecoderReader` for `std::io::Write` and `std::io::Read`.
 - **Formatting (`no_std`):** `display` (`EncodedDisplay`) and `HexDisplay` (`{:x}` and `{:X}` only) write encoded text through `core::fmt` without an intermediate string.
@@ -64,6 +64,10 @@ For example, use `base64::Base64<base64::Standard, policy::UnpaddedOptional>` fo
 | `alloc`   | Adds owned and append helpers for `String` and `Vec<u8>`.                                          |
 | `std`     | Enables `alloc`, I/O adapters, and runtime x86/x86_64 CPU feature detection.                       |
 | `serde`   | Adds `serde_core` serialization and fixed-array deserialization, including without an allocator.   |
+
+## Validation without decoding
+
+Use `validate(input)` when an encoded field is stored or forwarded without materializing decoded bytes. It enforces the profile's complete alphabet, padding, case, and canonical trailing-bit rules, returning the same `DecodeError` and byte offset as decoding with sufficient output capacity. Calling `validate` immediately before decoding the same input duplicates validation work.
 
 ## Uninitialized output buffers
 

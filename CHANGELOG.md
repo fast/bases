@@ -6,6 +6,7 @@ All significant changes to this project will be documented in this file.
 
 ### Features
 
+* Add `validate` to all profiles and the `Codec` trait for validating encoded input without allocating or writing decoded bytes, preserving `DecodeError` precedence and byte offsets.
 * Add `policy::PaddedOptional` and `policy::UnpaddedOptional` for Base32 and Base64. Both accept complete padding or none when decoding and emit padded and unpadded output, respectively.
 * Add `encode_into_uninit` and `decode_into_uninit` to all profiles and the `Codec` trait. They write into caller-provided `MaybeUninit<u8>` storage and return the initialized prefix.
 

@@ -51,6 +51,9 @@ use core::arch::aarch64::vsubq_u8;
 use core::mem::MaybeUninit;
 use core::ptr;
 
+use crate::backend::base64::HI_MASK;
+use crate::backend::base64::LO_MASK_STD;
+use crate::backend::base64::LO_MASK_URL;
 use crate::backend::base64::STANDARD;
 use crate::backend::base64::URL_SAFE;
 
@@ -65,14 +68,6 @@ const DEC_SHL: [i8; 16] = [2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0, 2, 4, 6, 0];
 const DEC_SHR: [i8; 16] = [-4, -2, 0, 0, -4, -2, 0, 0, -4, -2, 0, 0, -4, -2, 0, 0];
 const DEC_PACK: [u8; 16] = [
     0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 0xff, 0xff, 0xff, 0xff,
-];
-
-const HI_MASK: [u8; 16] = [0, 0, 1, 2, 4, 8, 4, 16, 0, 0, 0, 0, 0, 0, 0, 0];
-const LO_MASK_STD: [u8; 16] = [
-    0x1a, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1c, 0x05, 0x04, 0x04, 0x04, 0x05,
-];
-const LO_MASK_URL: [u8; 16] = [
-    0x1a, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1c, 0x04, 0x04, 0x05, 0x04, 0x0c,
 ];
 
 const ROLL_STD: [u8; 16] = [0, 0, 19, 4, 0xbf, 0xbf, 0xb9, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0];

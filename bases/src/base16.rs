@@ -144,6 +144,18 @@ where
         backend::base16::max_decoded_len(input_len)
     }
 
+    /// Validates encoded `input` without allocating or writing decoded bytes.
+    ///
+    /// See [`Codec::validate`](crate::Codec::validate) for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`DecodeError`] as decoding with sufficient output capacity.
+    #[inline]
+    pub fn validate(input: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+        codec::validate::<Self>(input.as_ref())
+    }
+
     /// Encodes `input` into `output`, returning the written prefix.
     ///
     /// # Errors
@@ -371,6 +383,16 @@ where
     #[inline]
     fn decode_plan_impl(input: &[u8]) -> Result<DecodePlan, DecodeError> {
         backend::base16::decode_plan(input)
+    }
+
+    #[inline]
+    fn validate_with_plan_impl(input: &[u8], plan: DecodePlan) -> Result<(), DecodeError> {
+        match (Case::UPPERCASE, DecodeCase::STRICT) {
+            (true, true) => backend::base16::validate_with_plan::<true, true>(input, plan),
+            (true, false) => backend::base16::validate_with_plan::<true, false>(input, plan),
+            (false, true) => backend::base16::validate_with_plan::<false, true>(input, plan),
+            (false, false) => backend::base16::validate_with_plan::<false, false>(input, plan),
+        }
     }
 
     #[inline(always)]

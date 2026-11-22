@@ -33,6 +33,14 @@ const URL_DECODE_LUTS: [[i32; 256]; 4] = make_decode_luts(true);
 const STD_DECODE_BYTE_LUT: [u8; 256] = make_decode_byte_lut(false);
 const URL_DECODE_BYTE_LUT: [u8; 256] = make_decode_byte_lut(true);
 
+pub const HI_MASK: [u8; 16] = [0, 0, 1, 2, 4, 8, 4, 16, 0, 0, 0, 0, 0, 0, 0, 0];
+pub const LO_MASK_STD: [u8; 16] = [
+    0x1a, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1c, 0x05, 0x04, 0x04, 0x04, 0x05,
+];
+pub const LO_MASK_URL: [u8; 16] = [
+    0x1a, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1e, 0x1c, 0x04, 0x04, 0x05, 0x04, 0x0c,
+];
+
 const fn make_decode_luts(url_safe: bool) -> [[i32; 256]; 4] {
     let mut luts = [[-1_i32; 256]; 4];
     let alphabet = if url_safe { URL_SAFE } else { STANDARD };
@@ -147,6 +155,28 @@ pub fn decode_plan<const PADDED: bool>(input: &[u8]) -> Result<DecodePlan, Decod
             padding: 0,
         })
     }
+}
+
+/// Validates Base64 alphabet symbols and unused trailing bits using `plan`.
+#[inline]
+pub fn validate_with_plan<const URL_SAFE_ALPHABET: bool>(
+    input: &[u8],
+    plan: DecodePlan,
+) -> Result<(), DecodeError> {
+    let data = &input[..plan.data_len];
+    let (lut, lo_mask) = if URL_SAFE_ALPHABET {
+        (&URL_DECODE_BYTE_LUT, &LO_MASK_URL)
+    } else {
+        (&STD_DECODE_BYTE_LUT, &LO_MASK_STD)
+    };
+    if let Some(index) = backend::validate_symbols(data, lut, &HI_MASK, lo_mask) {
+        return Err(backend::invalid_byte_error(data[index], index));
+    }
+    if plan.complete_len != plan.data_len {
+        let last = lut[usize::from(data[data.len() - 1])];
+        check_tail_bits(last, plan.data_len - plan.complete_len, plan.data_len - 1)?;
+    }
+    Ok(())
 }
 
 /// Encodes `input` into `output` using Base64, returning the number of bytes written.
@@ -611,11 +641,7 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
         [first, second] => {
             let v0 = decode_value(*first, base_index, lut)?;
             let v1 = decode_value(*second, base_index + 1, lut)?;
-            if v1 & 0x0f != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 1,
-                });
-            }
+            check_tail_bits(v1, trailing.len(), base_index + 1)?;
             output[0].write((v0 << 2) | (v1 >> 4));
             Ok(1)
         }
@@ -623,16 +649,26 @@ fn decode_tail<const URL_SAFE_ALPHABET: bool>(
             let v0 = decode_value(*first, base_index, lut)?;
             let v1 = decode_value(*second, base_index + 1, lut)?;
             let v2 = decode_value(*third, base_index + 2, lut)?;
-            if v2 & 0x03 != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 2,
-                });
-            }
+            check_tail_bits(v2, trailing.len(), base_index + 2)?;
             output[0].write((v0 << 2) | (v1 >> 4));
             output[1].write((v1 << 4) | (v2 >> 2));
             Ok(2)
         }
         _ => unreachable!(),
+    }
+}
+
+#[inline]
+fn check_tail_bits(value: u8, tail_len: usize, index: usize) -> Result<(), DecodeError> {
+    let mask = match tail_len {
+        2 => 0x0f,
+        3 => 0x03,
+        _ => unreachable!("decode plan guarantees a valid tail length"),
+    };
+    if value & mask == 0 {
+        Ok(())
+    } else {
+        Err(DecodeError::NonCanonical { index })
     }
 }
 

@@ -58,18 +58,14 @@ use core::arch::aarch64::vst1q_u8;
 use core::mem::MaybeUninit;
 use core::ptr;
 
+use crate::backend::base32::LO_MASK_HEX;
+use crate::backend::base32::LO_MASK_STD;
 use crate::backend::base32::select_alphabet;
+use crate::backend::base32::select_hi_mask;
 
 const W_SHUF: [u8; 16] = [1, 0, 2, 1, 3, 2, 4, 3, 6, 5, 7, 6, 8, 7, 9, 8];
 const EVEN_SHIFTS: [i16; 8] = [-11, -9, -7, -5, -11, -9, -7, -5];
 const ODD_SHIFTS: [i16; 8] = [2, 4, 6, 8, 2, 4, 6, 8];
-
-const HI_MASK_MIXED: [u8; 16] = [0, 0, 0, 1, 2, 4, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0];
-const HI_MASK_UPPER: [u8; 16] = [0, 0, 0, 1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-const HI_MASK_LOWER: [u8; 16] = [0, 0, 0, 1, 0, 0, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0];
-
-const LO_MASK_STD: [u8; 16] = [4, 6, 7, 7, 7, 7, 7, 7, 6, 6, 6, 2, 2, 2, 2, 2];
-const LO_MASK_HEX: [u8; 16] = [5, 7, 7, 7, 7, 7, 7, 3, 3, 3, 2, 2, 2, 2, 2, 2];
 
 const ROLL_STD: [u8; 16] = [
     0, 0, 0, 0xe8, 0xbf, 0xbf, 0x9f, 0x9f, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -79,16 +75,6 @@ const ROLL_HEX: [u8; 16] = [
 ];
 
 const PACK_SHUF: [u8; 16] = [4, 3, 2, 1, 0, 12, 11, 10, 9, 8, 0, 0, 0, 0, 0, 0];
-
-const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'static [u8; 16] {
-    if !STRICT_CASE {
-        &HI_MASK_MIXED
-    } else if UPPERCASE {
-        &HI_MASK_UPPER
-    } else {
-        &HI_MASK_LOWER
-    }
-}
 
 #[inline]
 pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(

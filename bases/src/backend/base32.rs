@@ -38,6 +38,22 @@ const HEX_DECODE_MIXED: [u8; 256] = make_decode_lut(true, true, true);
 const HEX_DECODE_UPPER: [u8; 256] = make_decode_lut(true, true, false);
 const HEX_DECODE_LOWER: [u8; 256] = make_decode_lut(true, false, true);
 
+const HI_MASK_MIXED: [u8; 16] = [0, 0, 0, 1, 2, 4, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0];
+const HI_MASK_UPPER: [u8; 16] = [0, 0, 0, 1, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const HI_MASK_LOWER: [u8; 16] = [0, 0, 0, 1, 0, 0, 2, 4, 0, 0, 0, 0, 0, 0, 0, 0];
+const LO_MASK_STD: [u8; 16] = [4, 6, 7, 7, 7, 7, 7, 7, 6, 6, 6, 2, 2, 2, 2, 2];
+const LO_MASK_HEX: [u8; 16] = [5, 7, 7, 7, 7, 7, 7, 3, 3, 3, 2, 2, 2, 2, 2, 2];
+
+const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'static [u8; 16] {
+    if !STRICT_CASE {
+        &HI_MASK_MIXED
+    } else if UPPERCASE {
+        &HI_MASK_UPPER
+    } else {
+        &HI_MASK_LOWER
+    }
+}
+
 const fn make_decode_lut(extended_hex: bool, allow_upper: bool, allow_lower: bool) -> [u8; 256] {
     let mut lut = [0xff_u8; 256];
     if extended_hex {
@@ -208,6 +224,34 @@ pub fn decode_plan<const PADDED: bool>(input: &[u8]) -> Result<DecodePlan, Decod
             padding: 0,
         })
     }
+}
+
+/// Validates Base32 alphabet symbols and unused trailing bits using `plan`.
+#[inline]
+pub fn validate_with_plan<
+    const EXTENDED_HEX: bool,
+    const UPPERCASE: bool,
+    const STRICT_CASE: bool,
+>(
+    input: &[u8],
+    plan: DecodePlan,
+) -> Result<(), DecodeError> {
+    let data = &input[..plan.data_len];
+    let lut = select_decode_lut::<EXTENDED_HEX, UPPERCASE, STRICT_CASE>();
+    let hi_mask = select_hi_mask::<UPPERCASE, STRICT_CASE>();
+    let lo_mask = if EXTENDED_HEX {
+        &LO_MASK_HEX
+    } else {
+        &LO_MASK_STD
+    };
+    if let Some(index) = backend::validate_symbols(data, lut, hi_mask, lo_mask) {
+        return Err(backend::invalid_byte_error(data[index], index));
+    }
+    if plan.complete_len != plan.data_len {
+        let last = lut[usize::from(data[data.len() - 1])];
+        check_tail_bits(last, plan.data_len - plan.complete_len, plan.data_len - 1)?;
+    }
+    Ok(())
 }
 
 /// Encodes `input` into `output` using Base32, returning the number of bytes written.
@@ -606,11 +650,7 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
         [b0, b1] => {
             let v0 = decode_value(*b0, base_index, lut)?;
             let v1 = decode_value(*b1, base_index + 1, lut)?;
-            if v1 & 0x03 != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 1,
-                });
-            }
+            check_tail_bits(v1, trailing.len(), base_index + 1)?;
             output[0].write((v0 << 3) | (v1 >> 2));
             Ok(1)
         }
@@ -619,11 +659,7 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
             let v1 = decode_value(*b1, base_index + 1, lut)?;
             let v2 = decode_value(*b2, base_index + 2, lut)?;
             let v3 = decode_value(*b3, base_index + 3, lut)?;
-            if v3 & 0x0f != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 3,
-                });
-            }
+            check_tail_bits(v3, trailing.len(), base_index + 3)?;
             output[0].write((v0 << 3) | (v1 >> 2));
             output[1].write((v1 << 6) | (v2 << 1) | (v3 >> 4));
             Ok(2)
@@ -634,11 +670,7 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
             let v2 = decode_value(*b2, base_index + 2, lut)?;
             let v3 = decode_value(*b3, base_index + 3, lut)?;
             let v4 = decode_value(*b4, base_index + 4, lut)?;
-            if v4 & 0x01 != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 4,
-                });
-            }
+            check_tail_bits(v4, trailing.len(), base_index + 4)?;
             output[0].write((v0 << 3) | (v1 >> 2));
             output[1].write((v1 << 6) | (v2 << 1) | (v3 >> 4));
             output[2].write((v3 << 4) | (v4 >> 1));
@@ -652,11 +684,7 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
             let v4 = decode_value(*b4, base_index + 4, lut)?;
             let v5 = decode_value(*b5, base_index + 5, lut)?;
             let v6 = decode_value(*b6, base_index + 6, lut)?;
-            if v6 & 0x07 != 0 {
-                return Err(DecodeError::NonCanonical {
-                    index: base_index + 6,
-                });
-            }
+            check_tail_bits(v6, trailing.len(), base_index + 6)?;
             output[0].write((v0 << 3) | (v1 >> 2));
             output[1].write((v1 << 6) | (v2 << 1) | (v3 >> 4));
             output[2].write((v3 << 4) | (v4 >> 1));
@@ -664,6 +692,22 @@ fn decode_tail<const EXTENDED_HEX: bool, const UPPERCASE: bool, const STRICT_CAS
             Ok(4)
         }
         _ => unreachable!(),
+    }
+}
+
+#[inline]
+fn check_tail_bits(value: u8, tail_len: usize, index: usize) -> Result<(), DecodeError> {
+    let mask = match tail_len {
+        2 => 0x03,
+        4 => 0x0f,
+        5 => 0x01,
+        7 => 0x07,
+        _ => unreachable!("decode plan guarantees a valid tail length"),
+    };
+    if value & mask == 0 {
+        Ok(())
+    } else {
+        Err(DecodeError::NonCanonical { index })
     }
 }
 

@@ -40,24 +40,12 @@ use core::arch::aarch64::vzip1q_u8;
 use core::arch::aarch64::vzip2q_u8;
 use core::mem::MaybeUninit;
 
+use crate::backend::base16::LO_MASK;
+use crate::backend::base16::select_hi_mask;
+
 const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
-
-const HI_MASK_MIXED: [u8; 16] = [0, 0, 0, 1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-const HI_MASK_UPPER: [u8; 16] = [0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-const HI_MASK_LOWER: [u8; 16] = [0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-const LO_MASK: [u8; 16] = [1, 7, 7, 7, 7, 7, 7, 1, 1, 1, 0, 0, 0, 0, 0, 0];
 const HI_OFFSET: [u8; 16] = [0, 0, 0, 0, 9, 0, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'static [u8; 16] {
-    if !STRICT_CASE {
-        &HI_MASK_MIXED
-    } else if UPPERCASE {
-        &HI_MASK_UPPER
-    } else {
-        &HI_MASK_LOWER
-    }
-}
 
 #[inline]
 pub fn encode<const UPPERCASE: bool>(

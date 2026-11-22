@@ -54,6 +54,10 @@ pub fn check<C: Codec>(reference: &Encoding) {
             );
             assert_that!(&encoded[..offset], each(eq(&0xa5)));
             assert_that!(&encoded[offset + expected.len()..], each(eq(&0xa5)));
+            assert_eq!(
+                C::validate(&encoded[offset..offset + expected.len()]),
+                Ok(())
+            );
 
             for capacity in [len, C::max_decoded_len(expected.len()), len + 32] {
                 let mut decoded = vec![0xa5; offset + capacity + 32];

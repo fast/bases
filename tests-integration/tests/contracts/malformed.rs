@@ -72,8 +72,17 @@ pub fn differential<C: Codec>(reference: &Encoding) {
         } else {
             reference.decode(wire).map_err(|_| ())
         };
-        let actual = C::decode_into(wire, &mut output).map_err(|_| ());
-        assert_eq!(actual.as_deref(), expected.as_deref(), "wire: {wire:?}");
+        let decoded = C::decode_into(wire, &mut output);
+        assert_eq!(
+            C::validate(wire).map_err(DecodeSliceError::from),
+            decoded.as_ref().map(|_| ()).map_err(|&error| error),
+            "validate wire: {wire:?}"
+        );
+        assert_eq!(
+            decoded.map_err(|_| ()).as_deref(),
+            expected.as_deref(),
+            "wire: {wire:?}"
+        );
         in_place.clear();
         in_place.extend_from_slice(wire);
         let actual = C::decode_in_place(&mut in_place).map_err(|_| ());
@@ -116,9 +125,34 @@ pub fn errors<C: Codec>(reference: &Encoding) {
         assert_error::<C>(&bad, DecodeError::InvalidByte { index, byte: b'!' });
     }
 
+    // Exercise aligned and unaligned SIMD bulk batches: an earlier error in a failing batch must
+    // win over a later invalid symbol or non-canonical tail.
+    let bulk = reference.encode(&payload(301));
+    let bulk_data_len = bulk.trim_end_matches('=').len();
+    for offset in [0, 1, 15, 31] {
+        let mut storage = vec![0xff; offset + bulk.len() + 32];
+        let slice = &mut storage[offset..offset + bulk.len()];
+        slice.copy_from_slice(bulk.as_bytes());
+        for first in [0, 71, 200, bulk_data_len - 2] {
+            let saved_first = slice[first];
+            let saved_last = slice[bulk_data_len - 1];
+            slice[first] = b'!';
+            slice[bulk_data_len - 1] = 0xff;
+            assert_eq!(
+                C::validate(&*slice),
+                Err(DecodeError::InvalidByte {
+                    index: first,
+                    byte: b'!',
+                })
+            );
+            slice[first] = saved_first;
+            slice[bulk_data_len - 1] = saved_last;
+        }
+    }
+
     let spec = reference.specification();
     let bits = reference.bit_width();
-    for len in 1..=5 {
+    for len in [1, 2, 3, 4, 5, 301] {
         let wire = reference.encode(&payload(len));
         let data_len = wire.trim_end_matches('=').len();
         let unused = data_len * bits - len * 8;
@@ -148,6 +182,7 @@ pub fn errors<C: Codec>(reference: &Encoding) {
 }
 
 fn assert_error<C: Codec>(wire: &[u8], expected: DecodeError) {
+    assert_eq!(C::validate(wire), Err(expected));
     let mut output = vec![0; C::max_decoded_len(wire.len())];
     assert_that!(
         C::decode_into(wire, &mut output),

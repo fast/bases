@@ -67,11 +67,11 @@
 //!
 //! # API layers
 //!
-//! - **Sizing and caller buffers (`no_std`)**: `encoded_len`, `max_decoded_len`, `encode_into`,
-//!   `decode_into`, `decode_in_place`, and `decode_array` operate without allocation, with `const
-//!   fn` support on concrete profile `new`, `name`, `encoded_len`, `max_decoded_len`, `display`,
-//!   `encoder`, and `decoder`. [`Codec::encode_into_uninit`] and [`Codec::decode_into_uninit`]
-//!   accept caller-provided `MaybeUninit<u8>` storage.
+//! - **Sizing, validation, and caller buffers (`no_std`)**: `encoded_len`, `max_decoded_len`,
+//!   `validate`, `encode_into`, `decode_into`, `decode_in_place`, and `decode_array` operate
+//!   without allocation, with `const fn` support on concrete profile `new`, `name`, `encoded_len`,
+//!   `max_decoded_len`, `display`, `encoder`, and `decoder`. [`Codec::encode_into_uninit`] and
+//!   [`Codec::decode_into_uninit`] accept caller-provided `MaybeUninit<u8>` storage.
 //! - **Owned and append helpers (`alloc`)**: `encode`, `encode_append`, `decode`, and transactional
 //!   `decode_append` return or extend `String` and `Vec<u8>`.
 //! - **Incremental streaming (`no_std` / `std`)**: [`Encoder`] and [`Decoder`] process arbitrarily

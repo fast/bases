@@ -189,6 +189,18 @@ where
         backend::base32::max_decoded_len(input_len)
     }
 
+    /// Validates encoded `input` without allocating or writing decoded bytes.
+    ///
+    /// See [`Codec::validate`](crate::Codec::validate) for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`DecodeError`] as decoding with sufficient output capacity.
+    #[inline]
+    pub fn validate(input: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+        codec::validate::<Self>(input.as_ref())
+    }
+
     /// Encodes `input` into `output`, returning the written prefix.
     ///
     /// # Errors
@@ -425,6 +437,36 @@ where
             backend::base32::decode_plan::<true>(input)
         } else {
             backend::base32::decode_plan::<false>(input)
+        }
+    }
+
+    #[inline]
+    fn validate_with_plan_impl(input: &[u8], plan: DecodePlan) -> Result<(), DecodeError> {
+        match (Alphabet::EXTENDED_HEX, Case::UPPERCASE, DecodeCase::STRICT) {
+            (false, false, false) => {
+                backend::base32::validate_with_plan::<false, false, false>(input, plan)
+            }
+            (false, false, true) => {
+                backend::base32::validate_with_plan::<false, false, true>(input, plan)
+            }
+            (false, true, false) => {
+                backend::base32::validate_with_plan::<false, true, false>(input, plan)
+            }
+            (false, true, true) => {
+                backend::base32::validate_with_plan::<false, true, true>(input, plan)
+            }
+            (true, false, false) => {
+                backend::base32::validate_with_plan::<true, false, false>(input, plan)
+            }
+            (true, false, true) => {
+                backend::base32::validate_with_plan::<true, false, true>(input, plan)
+            }
+            (true, true, false) => {
+                backend::base32::validate_with_plan::<true, true, false>(input, plan)
+            }
+            (true, true, true) => {
+                backend::base32::validate_with_plan::<true, true, true>(input, plan)
+            }
         }
     }
 

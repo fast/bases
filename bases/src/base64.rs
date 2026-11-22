@@ -169,6 +169,18 @@ where
         backend::base64::max_decoded_len(input_len)
     }
 
+    /// Validates encoded `input` without allocating or writing decoded bytes.
+    ///
+    /// See [`Codec::validate`](crate::Codec::validate) for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`DecodeError`] as decoding with sufficient output capacity.
+    #[inline]
+    pub fn validate(input: impl AsRef<[u8]>) -> Result<(), DecodeError> {
+        codec::validate::<Self>(input.as_ref())
+    }
+
     /// Encodes `input` into `output`, returning the written prefix.
     ///
     /// # Errors
@@ -403,6 +415,15 @@ where
             backend::base64::decode_plan::<true>(input)
         } else {
             backend::base64::decode_plan::<false>(input)
+        }
+    }
+
+    #[inline]
+    fn validate_with_plan_impl(input: &[u8], plan: DecodePlan) -> Result<(), DecodeError> {
+        if Alphabet::URL_SAFE {
+            backend::base64::validate_with_plan::<true>(input, plan)
+        } else {
+            backend::base64::validate_with_plan::<false>(input, plan)
         }
     }
 

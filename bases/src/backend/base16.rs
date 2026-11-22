@@ -27,6 +27,21 @@ const MIXED_DECODE_LUT: [u8; 256] = make_decode_lut(true, true);
 const UPPER_DECODE_LUT: [u8; 256] = make_decode_lut(true, false);
 const LOWER_DECODE_LUT: [u8; 256] = make_decode_lut(false, true);
 
+const HI_MASK_MIXED: [u8; 16] = [0, 0, 0, 1, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const HI_MASK_UPPER: [u8; 16] = [0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const HI_MASK_LOWER: [u8; 16] = [0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+const LO_MASK: [u8; 16] = [1, 7, 7, 7, 7, 7, 7, 1, 1, 1, 0, 0, 0, 0, 0, 0];
+
+const fn select_hi_mask<const UPPERCASE: bool, const STRICT_CASE: bool>() -> &'static [u8; 16] {
+    if !STRICT_CASE {
+        &HI_MASK_MIXED
+    } else if UPPERCASE {
+        &HI_MASK_UPPER
+    } else {
+        &HI_MASK_LOWER
+    }
+}
+
 const fn make_decode_lut(allow_upper: bool, allow_lower: bool) -> [u8; 256] {
     let mut lut = [0xff_u8; 256];
     let mut byte = b'0';
@@ -87,6 +102,24 @@ pub fn decode_plan(input: &[u8]) -> Result<DecodePlan, DecodeError> {
         complete_len: input.len(),
         padding: 0,
     })
+}
+
+/// Validates Base16 alphabet symbols after input length has been validated.
+#[inline]
+pub fn validate_with_plan<const UPPERCASE: bool, const STRICT_CASE: bool>(
+    input: &[u8],
+    plan: DecodePlan,
+) -> Result<(), DecodeError> {
+    debug_assert_eq!(plan.data_len, input.len());
+    let lut = select_decode_lut::<UPPERCASE, STRICT_CASE>();
+    let hi_mask = select_hi_mask::<UPPERCASE, STRICT_CASE>();
+    if let Some(index) = backend::validate_symbols(input, lut, hi_mask, &LO_MASK) {
+        return Err(DecodeError::InvalidByte {
+            index,
+            byte: input[index],
+        });
+    }
+    Ok(())
 }
 
 /// Encodes `input` into `output` using Base16, returning the number of bytes written.
