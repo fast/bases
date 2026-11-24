@@ -23,6 +23,7 @@ use crate::Codec;
 use crate::DecodeSliceError;
 use crate::Decoder;
 use crate::Encoder;
+use crate::FinishError;
 use crate::codec::sealed::Profile;
 
 const BUF_LEN: usize = 1024;
@@ -33,6 +34,8 @@ const MAX_DECODED_QUANTUM: usize = 5;
 /// Call [`finish`](Self::finish) to emit any buffered incomplete quantum and
 /// padding while surfacing I/O errors. Dropping the writer without calling
 /// `finish` performs a best-effort finalization and ignores errors.
+/// Once `finish` has been called, recovered adapters reject nonempty writes
+/// with [`io::ErrorKind::BrokenPipe`] and must be explicitly finished again.
 ///
 /// # Examples
 ///
@@ -53,7 +56,7 @@ pub struct EncoderWriter<C: Codec, W: Write> {
     output: [u8; BUF_LEN],
     output_pos: usize,
     output_len: usize,
-    finished: bool,
+    finishing: bool,
     panicked: bool,
 }
 
@@ -62,7 +65,7 @@ impl<C: Codec, W: Write + fmt::Debug> fmt::Debug for EncoderWriter<C, W> {
         formatter
             .debug_struct("EncoderWriter")
             .field("writer", &self.writer)
-            .field("finished", &self.finished)
+            .field("finishing", &self.finishing)
             .finish_non_exhaustive()
     }
 }
@@ -77,7 +80,7 @@ impl<C: Codec, W: Write> EncoderWriter<C, W> {
             output: [0; BUF_LEN],
             output_pos: 0,
             output_len: 0,
-            finished: false,
+            finishing: false,
             panicked: false,
         }
     }
@@ -107,7 +110,7 @@ impl<C: Codec, W: Write> EncoderWriter<C, W> {
     /// padding.
     #[must_use]
     pub fn into_inner(mut self) -> W {
-        self.finished = true;
+        self.finishing = true;
         self.writer
             .take()
             .expect("encoder writer is present before consumption")
@@ -116,13 +119,53 @@ impl<C: Codec, W: Write> EncoderWriter<C, W> {
     /// Encodes any remaining buffered input, writes all buffered output, and
     /// returns the underlying writer.
     ///
+    /// On error, [`FinishError::into_inner`] recovers the adapter with its
+    /// remaining output and write position intact. Retry `finish` to resume
+    /// writing without duplicating bytes already accepted by the underlying
+    /// writer. Once finalization starts, nonempty writes fail with
+    /// [`io::ErrorKind::BrokenPipe`], even if no output was written by `finish`.
+    /// Dropping the error or recovered adapter does not retry finalization.
+    /// The underlying writer is still dropped normally.
+    /// The adapter is stored directly in the error without an extra allocation.
+    ///
+    /// This does not call [`flush`](Write::flush) on the underlying writer.
+    ///
     /// # Errors
     ///
-    /// Returns any I/O error emitted by the underlying writer.
-    pub fn finish(mut self) -> io::Result<W> {
-        let result = self.finish_inner();
-        self.finished = true;
-        result?;
+    /// Returns [`FinishError`] carrying an I/O error from the underlying
+    /// writer, or [`io::ErrorKind::WriteZero`] if it cannot make progress.
+    ///
+    /// # Examples
+    ///
+    /// Recover from a destination that has no capacity, then retry with space
+    /// for the final quantum:
+    ///
+    /// ```
+    /// use std::io;
+    /// use std::io::Write;
+    ///
+    /// use bases::Base64;
+    ///
+    /// let mut output = [0_u8; 4];
+    /// let mut empty = [];
+    /// let mut encoder = Base64::encoder_writer(&mut empty[..]);
+    /// encoder.write_all(b"f")?;
+    /// let failure = encoder.finish().unwrap_err();
+    /// assert_eq!(failure.error().kind(), io::ErrorKind::WriteZero);
+    ///
+    /// let mut encoder = failure.into_inner();
+    /// *encoder.get_mut() = &mut output[..];
+    /// encoder.finish()?;
+    /// assert_eq!(&output, b"Zg==");
+    /// # Ok::<(), io::Error>(())
+    /// ```
+    // Preserve the inline adapter for recovery without allocating on failure.
+    #[allow(clippy::result_large_err)]
+    pub fn finish(mut self) -> Result<W, FinishError<Self, io::Error>> {
+        self.finishing = true;
+        if let Err(error) = self.finish_inner() {
+            return Err(FinishError::new(self, error));
+        }
         Ok(self
             .writer
             .take()
@@ -130,10 +173,6 @@ impl<C: Codec, W: Write> EncoderWriter<C, W> {
     }
 
     fn finish_inner(&mut self) -> io::Result<()> {
-        if self.finished {
-            return Ok(());
-        }
-
         self.flush_encoded()?;
         if self.encoder.finish_output_len() > 0 {
             let encoded_len = self
@@ -148,7 +187,6 @@ impl<C: Codec, W: Write> EncoderWriter<C, W> {
             self.flush_encoded()?;
         }
 
-        self.finished = true;
         Ok(())
     }
 
@@ -190,6 +228,13 @@ impl<C: Codec, W: Write> Write for EncoderWriter<C, W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);
+        }
+
+        if self.finishing {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "cannot write input after finalization has started",
+            ));
         }
 
         self.flush_encoded()?;
@@ -256,7 +301,7 @@ impl<C: Codec, W: Write> Write for EncoderWriter<C, W> {
 
 impl<C: Codec, W: Write> Drop for EncoderWriter<C, W> {
     fn drop(&mut self) {
-        if !self.finished && !self.panicked {
+        if !self.finishing && !self.panicked {
             let _ = self.finish_inner();
         }
     }

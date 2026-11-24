@@ -12,9 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::cell::Cell;
+use std::error::Error;
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use std::panic;
+use std::ptr;
+use std::rc::Rc;
 
 use bases::Base32;
 use bases::Base64;
@@ -62,6 +67,17 @@ fn decoder_reader_repeats_the_finalization_error_at_eof() {
 struct ScriptedWriter {
     writes: std::vec::IntoIter<io::Result<usize>>,
     bytes: Vec<u8>,
+    flushes: usize,
+}
+
+impl ScriptedWriter {
+    fn new(writes: Vec<io::Result<usize>>) -> Self {
+        Self {
+            writes: writes.into_iter(),
+            bytes: Vec::new(),
+            flushes: 0,
+        }
+    }
 }
 
 impl Write for ScriptedWriter {
@@ -72,6 +88,7 @@ impl Write for ScriptedWriter {
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        self.flushes += 1;
         Ok(())
     }
 }
@@ -79,10 +96,7 @@ impl Write for ScriptedWriter {
 #[test]
 fn writer_retries_a_failed_quantum_without_consuming_pending_input() {
     for failure in [Ok(0), Err(io::Error::from(io::ErrorKind::WouldBlock))] {
-        let inner = ScriptedWriter {
-            writes: vec![failure].into_iter(),
-            bytes: Vec::new(),
-        };
+        let inner = ScriptedWriter::new(vec![failure]);
         let mut writer = Base64::encoder_writer(inner);
         assert_eq!(writer.write(b"f").unwrap(), 1);
         match writer.write(b"oo") {
@@ -96,10 +110,7 @@ fn writer_retries_a_failed_quantum_without_consuming_pending_input() {
 
 #[test]
 fn writer_retries_buffered_output_without_duplicating_accepted_input() {
-    let inner = ScriptedWriter {
-        writes: vec![Ok(2), Err(io::Error::from(io::ErrorKind::WouldBlock))].into_iter(),
-        bytes: Vec::new(),
-    };
+    let inner = ScriptedWriter::new(vec![Ok(2), Err(io::Error::from(io::ErrorKind::WouldBlock))]);
     let mut writer = Base64::encoder_writer(inner);
     assert_eq!(writer.write(b"foo").unwrap(), 3);
     assert_eq!(
@@ -108,4 +119,136 @@ fn writer_retries_buffered_output_without_duplicating_accepted_input() {
     );
     assert_eq!(writer.write(b"bar").unwrap(), 3);
     assert_eq!(writer.finish().unwrap().bytes, b"Zm9vYmFy");
+}
+
+#[test]
+fn discarding_finish_recovery_state_does_not_retry_writes() {
+    for action in [
+        "drop error",
+        "drop adapter",
+        "into_inner",
+        "into_error",
+        "convert",
+    ] {
+        let mut inner =
+            ScriptedWriter::new(vec![Ok(1), Err(io::Error::from(io::ErrorKind::WouldBlock))]);
+        let mut writer = Base64::encoder_writer(&mut inner);
+        writer.write_all(b"f").unwrap();
+        let Err(failure) = writer.finish() else {
+            panic!("scripted finalization must fail");
+        };
+        assert!(ptr::eq(
+            failure
+                .source()
+                .unwrap()
+                .downcast_ref::<io::Error>()
+                .unwrap(),
+            failure.error(),
+        ));
+        match action {
+            "drop error" => drop(failure),
+            "drop adapter" => drop(failure.into_inner()),
+            "into_inner" => {
+                let inner = failure.into_inner().into_inner();
+                assert_eq!(inner.bytes, b"Z");
+            }
+            "into_error" => assert_eq!(failure.into_error().kind(), io::ErrorKind::WouldBlock),
+            "convert" => {
+                let error = io::Error::from(failure);
+                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+            }
+            _ => unreachable!(),
+        }
+        // The next write would succeed, so an implicit retry would append bytes.
+        assert_eq!(inner.bytes, b"Z", "action {action}");
+        assert_eq!(inner.flushes, 0);
+    }
+}
+
+#[test]
+fn finish_errors_propagate_as_io_errors_with_borrowed_writers() {
+    fn finish(writer: EncoderWriter<Base64, &mut ScriptedWriter>) -> io::Result<()> {
+        writer.finish()?;
+        Ok(())
+    }
+
+    let mut inner = ScriptedWriter::new(vec![
+        Ok(1),
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "sink refused output",
+        )),
+    ]);
+    let mut writer = Base64::encoder_writer(&mut inner);
+    writer.write_all(b"f").unwrap();
+    let error = finish(writer).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(error.to_string(), "sink refused output");
+    assert_eq!(inner.bytes, b"Z");
+}
+
+#[test]
+fn recovery_supports_non_send_writers_and_flush_does_not_reopen_input() {
+    struct LocalWriter<'a> {
+        inner: &'a mut ScriptedWriter,
+        flushes: Rc<Cell<usize>>,
+    }
+
+    impl Write for LocalWriter<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes.set(self.flushes.get() + 1);
+            self.inner.flush()
+        }
+    }
+
+    let flushes = Rc::new(Cell::new(0));
+    let mut inner =
+        ScriptedWriter::new(vec![Ok(1), Err(io::Error::from(io::ErrorKind::WouldBlock))]);
+    let mut writer = Base64::encoder_writer(LocalWriter {
+        inner: &mut inner,
+        flushes: Rc::clone(&flushes),
+    });
+    writer.write_all(b"f").unwrap();
+    let Err(failure) = writer.finish() else {
+        panic!("scripted finalization must fail");
+    };
+    let mut writer = failure.into_inner();
+    writer.flush().unwrap();
+    assert_eq!(flushes.get(), 1);
+    assert_eq!(
+        writer.write(b"oo").unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    let inner = writer.finish().unwrap();
+    assert_eq!(inner.inner.bytes, b"Zg==");
+    assert_eq!(flushes.get(), 1);
+}
+
+#[test]
+fn finish_does_not_retry_after_the_underlying_writer_panics() {
+    struct PanickingWriter<'a>(&'a Cell<usize>);
+
+    impl Write for PanickingWriter<'_> {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            self.0.set(self.0.get() + 1);
+            panic!("writer panicked");
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let calls = Cell::new(0);
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let mut writer = Base64::encoder_writer(PanickingWriter(&calls));
+        writer.write_all(b"f").unwrap();
+        let _ = writer.finish();
+    }));
+    assert!(result.is_err());
+    assert_eq!(calls.get(), 1);
 }
