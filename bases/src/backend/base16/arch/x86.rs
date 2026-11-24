@@ -87,6 +87,9 @@ use x86_arch::_mm256_unpackhi_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_unpacklo_epi8;
 
+use crate::backend::simd::X86Token;
+use crate::backend::simd::simd_fn;
+
 #[inline]
 pub fn encode<const UPPERCASE: bool>(
     input: &[u8],
@@ -96,34 +99,12 @@ pub fn encode<const UPPERCASE: bool>(
         return (0, 0);
     }
 
-    #[cfg(target_feature = "avx2")]
-    {
-        // SAFETY: `target_feature = "avx2"` is enabled at compile time.
-        unsafe { encode_avx2::<UPPERCASE>(input, output) }
-    }
-
-    #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
-    {
-        if is_x86_feature_detected!("avx2") {
-            // SAFETY: Runtime feature detection confirmed AVX2 support.
-            unsafe { encode_avx2::<UPPERCASE>(input, output) }
-        } else if is_x86_feature_detected!("ssse3") {
-            // SAFETY: Runtime feature detection confirmed SSSE3 support.
-            unsafe { encode_ssse3::<UPPERCASE>(input, output) }
-        } else {
-            let _ = (input, output);
-            (0, 0)
-        }
-    }
-
-    #[cfg(all(
-        not(target_feature = "avx2"),
-        not(feature = "std"),
-        target_feature = "ssse3"
-    ))]
-    {
-        // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
-        unsafe { encode_ssse3::<UPPERCASE>(input, output) }
+    match X86Token::detect() {
+        #[cfg(any(feature = "std", target_feature = "avx2"))]
+        Some(X86Token::Avx2(token)) => encode_avx2::<UPPERCASE>(token, input, output),
+        #[cfg(not(target_feature = "avx2"))]
+        Some(X86Token::Ssse3(token)) => encode_ssse3::<UPPERCASE>(token, input, output),
+        None => (0, 0),
     }
 }
 
@@ -259,88 +240,92 @@ fn encode_chunk_16(v: __m128i, hex_tbl: __m128i, mask_0f: __m128i) -> (__m128i, 
     )
 }
 
-#[cfg(not(target_feature = "avx2"))]
-#[target_feature(enable = "ssse3")]
-fn encode_ssse3<const UPPERCASE: bool>(
-    input: &[u8],
-    output: &mut [MaybeUninit<u8>],
-) -> (usize, usize) {
-    let chunks = (input.len() / 16).min(output.len() / 32);
-    if chunks == 0 {
-        return (0, 0);
-    }
-
-    let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
-    let hex_tbl = hex_table_128::<UPPERCASE>();
-    let mask_0f = _mm_set1_epi8(0x0f);
-    for _ in 0..chunks {
-        // SAFETY: `chunks * 16 <= input.len()`, so `in_ptr` is valid for 16 readable bytes.
-        let v = unsafe { _mm_loadu_si128(in_ptr.cast()) };
-        let (out0, out1) = encode_chunk_16(v, hex_tbl, mask_0f);
-        // SAFETY: `chunks * 32 <= output.len()`, so `out_ptr` is valid for 32 writes and
-        // advancing both pointers stays in bounds.
-        unsafe {
-            _mm_storeu_si128(out_ptr.cast(), out0);
-            _mm_storeu_si128(out_ptr.add(16).cast(), out1);
-            in_ptr = in_ptr.add(16);
-            out_ptr = out_ptr.add(32);
+simd_fn! {
+    #[cfg(not(target_feature = "avx2"))]
+    fn encode_ssse3<const UPPERCASE: bool>(
+        _token: Ssse3Token,
+        input: &[u8],
+        output: &mut [MaybeUninit<u8>],
+    ) -> (usize, usize) {
+        let chunks = (input.len() / 16).min(output.len() / 32);
+        if chunks == 0 {
+            return (0, 0);
         }
-    }
-    (chunks * 16, chunks * 32)
-}
 
-#[cfg(any(feature = "std", target_feature = "avx2"))]
-#[target_feature(enable = "avx2")]
-fn encode_avx2<const UPPERCASE: bool>(
-    input: &[u8],
-    output: &mut [MaybeUninit<u8>],
-) -> (usize, usize) {
-    let chunks = (input.len() / 32).min(output.len() / 64);
-    let mut input_index = chunks * 32;
-    let mut output_index = chunks * 64;
-
-    let hex_128 = hex_table_128::<UPPERCASE>();
-    if chunks > 0 {
-        let hex_tbl = _mm256_set_m128i(hex_128, hex_128);
-        let mask_0f = _mm256_set1_epi8(0x0f);
         let mut in_ptr = input.as_ptr();
         let mut out_ptr = output.as_mut_ptr().cast::<u8>();
+        let hex_tbl = hex_table_128::<UPPERCASE>();
+        let mask_0f = _mm_set1_epi8(0x0f);
         for _ in 0..chunks {
-            // SAFETY: `chunks * 32 <= input.len()`, so `in_ptr` is valid for 32 reads.
-            let v = unsafe { _mm256_loadu_si256(in_ptr.cast()) };
-            let hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), mask_0f);
-            let lo = _mm256_and_si256(v, mask_0f);
-            let hi_ascii = _mm256_shuffle_epi8(hex_tbl, hi);
-            let lo_ascii = _mm256_shuffle_epi8(hex_tbl, lo);
-            let unp_lo = _mm256_unpacklo_epi8(hi_ascii, lo_ascii);
-            let unp_hi = _mm256_unpackhi_epi8(hi_ascii, lo_ascii);
-            let out0 = _mm256_permute2x128_si256::<0x20>(unp_lo, unp_hi);
-            let out1 = _mm256_permute2x128_si256::<0x31>(unp_lo, unp_hi);
-            // SAFETY: `chunks * 64 <= output.len()`, so `out_ptr` is valid for 64 writes and
+            // SAFETY: `chunks * 16 <= input.len()`, so `in_ptr` is valid for 16 readable bytes.
+            let v = unsafe { _mm_loadu_si128(in_ptr.cast()) };
+            let (out0, out1) = encode_chunk_16(v, hex_tbl, mask_0f);
+            // SAFETY: `chunks * 32 <= output.len()`, so `out_ptr` is valid for 32 writes and
             // advancing both pointers stays in bounds.
             unsafe {
-                _mm256_storeu_si256(out_ptr.cast(), out0);
-                _mm256_storeu_si256(out_ptr.add(32).cast(), out1);
-                in_ptr = in_ptr.add(32);
-                out_ptr = out_ptr.add(64);
+                _mm_storeu_si128(out_ptr.cast(), out0);
+                _mm_storeu_si128(out_ptr.add(16).cast(), out1);
+                in_ptr = in_ptr.add(16);
+                out_ptr = out_ptr.add(32);
             }
         }
+        (chunks * 16, chunks * 32)
     }
-    if input_index + 16 <= input.len() && output_index + 32 <= output.len() {
-        // SAFETY: The guard above ensures `input_index + 16 <= input.len()`.
-        let v = unsafe { _mm_loadu_si128(input.as_ptr().add(input_index).cast()) };
-        let (out0, out1) = encode_chunk_16(v, hex_128, _mm_set1_epi8(0x0f));
-        // SAFETY: The guard above ensures `output_index + 32 <= output.len()`.
-        unsafe {
-            let out_ptr = output.as_mut_ptr().cast::<u8>().add(output_index);
-            _mm_storeu_si128(out_ptr.cast(), out0);
-            _mm_storeu_si128(out_ptr.add(16).cast(), out1);
+}
+
+simd_fn! {
+    #[cfg(any(feature = "std", target_feature = "avx2"))]
+    fn encode_avx2<const UPPERCASE: bool>(
+        _token: Avx2Token,
+        input: &[u8],
+        output: &mut [MaybeUninit<u8>],
+    ) -> (usize, usize) {
+        let chunks = (input.len() / 32).min(output.len() / 64);
+        let mut input_index = chunks * 32;
+        let mut output_index = chunks * 64;
+
+        let hex_128 = hex_table_128::<UPPERCASE>();
+        if chunks > 0 {
+            let hex_tbl = _mm256_set_m128i(hex_128, hex_128);
+            let mask_0f = _mm256_set1_epi8(0x0f);
+            let mut in_ptr = input.as_ptr();
+            let mut out_ptr = output.as_mut_ptr().cast::<u8>();
+            for _ in 0..chunks {
+                // SAFETY: `chunks * 32 <= input.len()`, so `in_ptr` is valid for 32 reads.
+                let v = unsafe { _mm256_loadu_si256(in_ptr.cast()) };
+                let hi = _mm256_and_si256(_mm256_srli_epi16(v, 4), mask_0f);
+                let lo = _mm256_and_si256(v, mask_0f);
+                let hi_ascii = _mm256_shuffle_epi8(hex_tbl, hi);
+                let lo_ascii = _mm256_shuffle_epi8(hex_tbl, lo);
+                let unp_lo = _mm256_unpacklo_epi8(hi_ascii, lo_ascii);
+                let unp_hi = _mm256_unpackhi_epi8(hi_ascii, lo_ascii);
+                let out0 = _mm256_permute2x128_si256::<0x20>(unp_lo, unp_hi);
+                let out1 = _mm256_permute2x128_si256::<0x31>(unp_lo, unp_hi);
+                // SAFETY: `chunks * 64 <= output.len()`, so `out_ptr` is valid for 64 writes and
+                // advancing both pointers stays in bounds.
+                unsafe {
+                    _mm256_storeu_si256(out_ptr.cast(), out0);
+                    _mm256_storeu_si256(out_ptr.add(32).cast(), out1);
+                    in_ptr = in_ptr.add(32);
+                    out_ptr = out_ptr.add(64);
+                }
+            }
         }
-        input_index += 16;
-        output_index += 32;
+        if input_index + 16 <= input.len() && output_index + 32 <= output.len() {
+            // SAFETY: The guard above ensures `input_index + 16 <= input.len()`.
+            let v = unsafe { _mm_loadu_si128(input.as_ptr().add(input_index).cast()) };
+            let (out0, out1) = encode_chunk_16(v, hex_128, _mm_set1_epi8(0x0f));
+            // SAFETY: The guard above ensures `output_index + 32 <= output.len()`.
+            unsafe {
+                let out_ptr = output.as_mut_ptr().cast::<u8>().add(output_index);
+                _mm_storeu_si128(out_ptr.cast(), out0);
+                _mm_storeu_si128(out_ptr.add(16).cast(), out1);
+            }
+            input_index += 16;
+            output_index += 32;
+        }
+        (input_index, output_index)
     }
-    (input_index, output_index)
 }
 
 #[inline]

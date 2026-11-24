@@ -62,6 +62,8 @@ use crate::backend::base32::LO_MASK_HEX;
 use crate::backend::base32::LO_MASK_STD;
 use crate::backend::base32::select_alphabet;
 use crate::backend::base32::select_hi_mask;
+use crate::backend::simd::NeonToken;
+use crate::backend::simd::simd_fn;
 
 const W_SHUF: [u8; 16] = [1, 0, 2, 1, 3, 2, 4, 3, 6, 5, 7, 6, 8, 7, 9, 8];
 const EVEN_SHIFTS: [i16; 8] = [-11, -9, -7, -5, -11, -9, -7, -5];
@@ -81,8 +83,7 @@ pub fn encode<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
-    // SAFETY: `target_feature = "neon"` is enabled at compile time for this module.
-    unsafe { encode_neon::<EXTENDED_HEX, UPPERCASE>(input, output) }
+    encode_neon::<EXTENDED_HEX, UPPERCASE>(NeonToken::summon(), input, output)
 }
 
 #[inline]
@@ -145,56 +146,57 @@ fn load_8_i16(words: &[i16; 8]) -> int16x8_t {
     unsafe { vld1q_s16(words.as_ptr()) }
 }
 
-#[inline]
-#[target_feature(enable = "neon")]
-fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
-    input: &[u8],
-    output: &mut [MaybeUninit<u8>],
-) -> (usize, usize) {
-    let chunks = (input.len() / 10).min(output.len() / 16);
-    if chunks == 0 {
-        return (0, 0);
-    }
-
-    let alpha = select_alphabet::<EXTENDED_HEX, UPPERCASE>()
-        .as_chunks::<16>()
-        .0;
-    let alphabet_tbl = uint8x16x2_t(load_16(&alpha[0]), load_16(&alpha[1]));
-    let w_shuf = load_16(&W_SHUF);
-    let even_shifts = load_8_i16(&EVEN_SHIFTS);
-    let odd_shifts = load_8_i16(&ODD_SHIFTS);
-
-    let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
-    let wide_chunks = ((input.len() - 6) / 10).min(chunks);
-    for _ in 0..wide_chunks {
-        // SAFETY: `wide_chunks` guarantees 16 readable bytes at `in_ptr`.
-        let raw = unsafe { vld1q_u8(in_ptr) };
-        let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
-        // SAFETY: `chunks * 16 <= output.len()` guarantees 16 writable bytes at `out_ptr`, and
-        // advancing by 10 and 16 bytes stays within both buffers.
-        unsafe {
-            vst1q_u8(out_ptr, ascii);
-            in_ptr = in_ptr.add(10);
-            out_ptr = out_ptr.add(16);
+simd_fn! {
+    fn encode_neon<const EXTENDED_HEX: bool, const UPPERCASE: bool>(
+        _token: NeonToken,
+        input: &[u8],
+        output: &mut [MaybeUninit<u8>],
+    ) -> (usize, usize) {
+        let chunks = (input.len() / 10).min(output.len() / 16);
+        if chunks == 0 {
+            return (0, 0);
         }
+
+        let alpha = select_alphabet::<EXTENDED_HEX, UPPERCASE>()
+            .as_chunks::<16>()
+            .0;
+        let alphabet_tbl = uint8x16x2_t(load_16(&alpha[0]), load_16(&alpha[1]));
+        let w_shuf = load_16(&W_SHUF);
+        let even_shifts = load_8_i16(&EVEN_SHIFTS);
+        let odd_shifts = load_8_i16(&ODD_SHIFTS);
+
+        let mut in_ptr = input.as_ptr();
+        let mut out_ptr = output.as_mut_ptr().cast::<u8>();
+        let wide_chunks = ((input.len() - 6) / 10).min(chunks);
+        for _ in 0..wide_chunks {
+            // SAFETY: `wide_chunks` guarantees 16 readable bytes at `in_ptr`.
+            let raw = unsafe { vld1q_u8(in_ptr) };
+            let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
+            // SAFETY: `chunks * 16 <= output.len()` guarantees 16 writable bytes at `out_ptr`, and
+            // advancing by 10 and 16 bytes stays within both buffers.
+            unsafe {
+                vst1q_u8(out_ptr, ascii);
+                in_ptr = in_ptr.add(10);
+                out_ptr = out_ptr.add(16);
+            }
+        }
+        if wide_chunks < chunks {
+            // The last two quanta need only ten readable bytes, even at an allocation boundary.
+            // SAFETY: `chunks * 10 <= input.len()` guarantees 10 remaining readable bytes at `in_ptr`.
+            let (low, high) = unsafe {
+                (
+                    ptr::read_unaligned(in_ptr.cast::<u64>()),
+                    u64::from(ptr::read_unaligned(in_ptr.add(8).cast::<u16>())),
+                )
+            };
+            let raw = vreinterpretq_u8_u64(vsetq_lane_u64::<1>(high, vdupq_n_u64(low)));
+            let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
+            // SAFETY: `chunks * 16 <= output.len()` guarantees 16 remaining writable bytes at
+            // `out_ptr`.
+            unsafe { vst1q_u8(out_ptr, ascii) };
+        }
+        (chunks * 10, chunks * 16)
     }
-    if wide_chunks < chunks {
-        // The last two quanta need only ten readable bytes, even at an allocation boundary.
-        // SAFETY: `chunks * 10 <= input.len()` guarantees 10 remaining readable bytes at `in_ptr`.
-        let (low, high) = unsafe {
-            (
-                ptr::read_unaligned(in_ptr.cast::<u64>()),
-                u64::from(ptr::read_unaligned(in_ptr.add(8).cast::<u16>())),
-            )
-        };
-        let raw = vreinterpretq_u8_u64(vsetq_lane_u64::<1>(high, vdupq_n_u64(low)));
-        let ascii = encode_chunk_neon(raw, alphabet_tbl, w_shuf, even_shifts, odd_shifts);
-        // SAFETY: `chunks * 16 <= output.len()` guarantees 16 remaining writable bytes at
-        // `out_ptr`.
-        unsafe { vst1q_u8(out_ptr, ascii) };
-    }
-    (chunks * 10, chunks * 16)
 }
 
 #[inline]

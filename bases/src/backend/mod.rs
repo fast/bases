@@ -22,6 +22,14 @@ pub mod base16;
 pub mod base32;
 pub mod base64;
 
+#[cfg(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        any(feature = "std", target_feature = "avx2", target_feature = "ssse3")
+    )
+))]
+mod simd;
 mod validate;
 
 use core::mem::MaybeUninit;

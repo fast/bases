@@ -56,6 +56,8 @@ use crate::backend::base64::LO_MASK_STD;
 use crate::backend::base64::LO_MASK_URL;
 use crate::backend::base64::STANDARD;
 use crate::backend::base64::URL_SAFE;
+use crate::backend::simd::NeonToken;
+use crate::backend::simd::simd_fn;
 
 const ENC_SHUF_A: [u8; 16] = [
     0xff, 0, 1, 0xff, 0xff, 3, 4, 0xff, 0xff, 6, 7, 0xff, 0xff, 9, 10, 0xff,
@@ -78,8 +80,7 @@ pub fn encode<const URL_SAFE_ALPHABET: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
-    // SAFETY: `target_feature = "neon"` is enabled at compile time for this module.
-    unsafe { encode_neon::<URL_SAFE_ALPHABET>(input, output) }
+    encode_neon::<URL_SAFE_ALPHABET>(NeonToken::summon(), input, output)
 }
 
 #[inline]
@@ -178,90 +179,91 @@ unsafe fn store_12_neon(out_ptr: *mut u8, packed: uint8x16_t) {
     }
 }
 
-#[inline]
-#[target_feature(enable = "neon")]
-fn encode_neon<const URL_SAFE_ALPHABET: bool>(
-    input: &[u8],
-    output: &mut [MaybeUninit<u8>],
-) -> (usize, usize) {
-    let chunks_12 = (input.len() / 12).min(output.len() / 16);
-    if chunks_12 == 0 {
-        return (0, 0);
-    }
-
-    let consumed_in = chunks_12 * 12;
-    let consumed_out = chunks_12 * 16;
-    let alpha = if URL_SAFE_ALPHABET {
-        URL_SAFE
-    } else {
-        STANDARD
-    }
-    .as_chunks::<16>()
-    .0;
-    let alphabet_tbl = uint8x16x4_t(
-        load_16(&alpha[0]),
-        load_16(&alpha[1]),
-        load_16(&alpha[2]),
-        load_16(&alpha[3]),
-    );
-    let mask_3f = vdupq_n_u8(0x3f);
-
-    let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
-    let mut rem_in = consumed_in;
-    let mut rem_total_in = input.len();
-
-    while rem_in >= 48 {
-        // SAFETY: `rem_in <= consumed_in <= input.len()` guarantees 48 readable bytes at `in_ptr`.
-        let uint8x16x3_t(b0, b1, b2) = unsafe { vld3q_u8(in_ptr) };
-        let idx0 = vshrq_n_u8::<2>(b0);
-        let idx1 = vandq_u8(vorrq_u8(vshlq_n_u8::<4>(b0), vshrq_n_u8::<4>(b1)), mask_3f);
-        let idx2 = vandq_u8(vorrq_u8(vshlq_n_u8::<2>(b1), vshrq_n_u8::<6>(b2)), mask_3f);
-        let idx3 = vandq_u8(b2, mask_3f);
-
-        let out0 = vqtbl4q_u8(alphabet_tbl, idx0);
-        let out1 = vqtbl4q_u8(alphabet_tbl, idx1);
-        let out2 = vqtbl4q_u8(alphabet_tbl, idx2);
-        let out3 = vqtbl4q_u8(alphabet_tbl, idx3);
-        // SAFETY: `rem_in >= 48` guarantees 64 writable bytes at `out_ptr`, and advancing by 48
-        // and 64 bytes stays within both buffers.
-        unsafe {
-            vst4q_u8(out_ptr, uint8x16x4_t(out0, out1, out2, out3));
-            in_ptr = in_ptr.add(48);
-            out_ptr = out_ptr.add(64);
+simd_fn! {
+    fn encode_neon<const URL_SAFE_ALPHABET: bool>(
+        _token: NeonToken,
+        input: &[u8],
+        output: &mut [MaybeUninit<u8>],
+    ) -> (usize, usize) {
+        let chunks_12 = (input.len() / 12).min(output.len() / 16);
+        if chunks_12 == 0 {
+            return (0, 0);
         }
 
-        rem_in -= 48;
-        rem_total_in -= 48;
-    }
+        let consumed_in = chunks_12 * 12;
+        let consumed_out = chunks_12 * 16;
+        let alpha = if URL_SAFE_ALPHABET {
+            URL_SAFE
+        } else {
+            STANDARD
+        }
+        .as_chunks::<16>()
+        .0;
+        let alphabet_tbl = uint8x16x4_t(
+            load_16(&alpha[0]),
+            load_16(&alpha[1]),
+            load_16(&alpha[2]),
+            load_16(&alpha[3]),
+        );
+        let mask_3f = vdupq_n_u8(0x3f);
 
-    if rem_in >= 12 {
-        let shuf_a = load_16(&ENC_SHUF_A);
-        let shl_a = load_16_i8(&ENC_SHL_A);
-        let shuf_b = load_16(&ENC_SHUF_B);
-        let shr_b = load_16_i8(&ENC_SHR_B);
+        let mut in_ptr = input.as_ptr();
+        let mut out_ptr = output.as_mut_ptr().cast::<u8>();
+        let mut rem_in = consumed_in;
+        let mut rem_total_in = input.len();
 
-        while rem_in >= 12 {
-            // SAFETY: `rem_total_in >= rem_in >= 12` guarantees enough readable bytes at `in_ptr`.
-            let v = unsafe { load_12_neon(in_ptr, rem_total_in) };
-            let part_a = vshlq_u8(vqtbl1q_u8(v, shuf_a), shl_a);
-            let part_b = vshlq_u8(vqtbl1q_u8(v, shuf_b), shr_b);
-            let idx = vandq_u8(vorrq_u8(part_a, part_b), mask_3f);
-            let ascii = vqtbl4q_u8(alphabet_tbl, idx);
-            // SAFETY: `rem_in >= 12` guarantees 16 writable bytes at `out_ptr`, and advancing by
-            // 12 and 16 bytes stays within both buffers.
+        while rem_in >= 48 {
+            // SAFETY: `rem_in <= consumed_in <= input.len()` guarantees 48 readable bytes at `in_ptr`.
+            let uint8x16x3_t(b0, b1, b2) = unsafe { vld3q_u8(in_ptr) };
+            let idx0 = vshrq_n_u8::<2>(b0);
+            let idx1 = vandq_u8(vorrq_u8(vshlq_n_u8::<4>(b0), vshrq_n_u8::<4>(b1)), mask_3f);
+            let idx2 = vandq_u8(vorrq_u8(vshlq_n_u8::<2>(b1), vshrq_n_u8::<6>(b2)), mask_3f);
+            let idx3 = vandq_u8(b2, mask_3f);
+
+            let out0 = vqtbl4q_u8(alphabet_tbl, idx0);
+            let out1 = vqtbl4q_u8(alphabet_tbl, idx1);
+            let out2 = vqtbl4q_u8(alphabet_tbl, idx2);
+            let out3 = vqtbl4q_u8(alphabet_tbl, idx3);
+            // SAFETY: `rem_in >= 48` guarantees 64 writable bytes at `out_ptr`, and advancing by 48
+            // and 64 bytes stays within both buffers.
             unsafe {
-                vst1q_u8(out_ptr, ascii);
-                in_ptr = in_ptr.add(12);
-                out_ptr = out_ptr.add(16);
+                vst4q_u8(out_ptr, uint8x16x4_t(out0, out1, out2, out3));
+                in_ptr = in_ptr.add(48);
+                out_ptr = out_ptr.add(64);
             }
 
-            rem_in -= 12;
-            rem_total_in -= 12;
+            rem_in -= 48;
+            rem_total_in -= 48;
         }
-    }
 
-    (consumed_in, consumed_out)
+        if rem_in >= 12 {
+            let shuf_a = load_16(&ENC_SHUF_A);
+            let shl_a = load_16_i8(&ENC_SHL_A);
+            let shuf_b = load_16(&ENC_SHUF_B);
+            let shr_b = load_16_i8(&ENC_SHR_B);
+
+            while rem_in >= 12 {
+                // SAFETY: `rem_total_in >= rem_in >= 12` guarantees enough readable bytes at `in_ptr`.
+                let v = unsafe { load_12_neon(in_ptr, rem_total_in) };
+                let part_a = vshlq_u8(vqtbl1q_u8(v, shuf_a), shl_a);
+                let part_b = vshlq_u8(vqtbl1q_u8(v, shuf_b), shr_b);
+                let idx = vandq_u8(vorrq_u8(part_a, part_b), mask_3f);
+                let ascii = vqtbl4q_u8(alphabet_tbl, idx);
+                // SAFETY: `rem_in >= 12` guarantees 16 writable bytes at `out_ptr`, and advancing by
+                // 12 and 16 bytes stays within both buffers.
+                unsafe {
+                    vst1q_u8(out_ptr, ascii);
+                    in_ptr = in_ptr.add(12);
+                    out_ptr = out_ptr.add(16);
+                }
+
+                rem_in -= 12;
+                rem_total_in -= 12;
+            }
+        }
+
+        (consumed_in, consumed_out)
+    }
 }
 
 /// # Safety

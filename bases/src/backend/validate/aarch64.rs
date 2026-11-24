@@ -28,6 +28,9 @@ use core::arch::aarch64::vreinterpretq_u16_u8;
 use core::arch::aarch64::vshrn_n_u16;
 use core::arch::aarch64::vshrq_n_u8;
 
+use crate::backend::simd::NeonToken;
+use crate::backend::simd::simd_fn;
+
 const BATCH_LEN: usize = 128;
 
 #[inline(always)]
@@ -35,62 +38,66 @@ pub fn validate(input: &[u8], hi_mask: &[u8; 16], lo_mask: &[u8; 16]) -> Result<
     if input.len() < 16 {
         return Ok(0);
     }
-    // SAFETY: `target_feature = "neon"` is enabled at compile time for this module.
-    unsafe { validate_neon(input, hi_mask, lo_mask) }
+    validate_neon(NeonToken::summon(), input, hi_mask, lo_mask)
 }
 
-#[inline]
-#[target_feature(enable = "neon")]
-fn validate_neon(input: &[u8], hi_mask: &[u8; 16], lo_mask: &[u8; 16]) -> Result<usize, usize> {
-    let len = input.len();
-    if len >= BATCH_LEN {
-        return validate_bulk(input, hi_mask, lo_mask);
-    }
+simd_fn! {
+    fn validate_neon(
+        _token: NeonToken,
+        input: &[u8],
+        hi_mask: &[u8; 16],
+        lo_mask: &[u8; 16],
+    ) -> Result<usize, usize> {
+        let len = input.len();
+        if len >= BATCH_LEN {
+            return validate_bulk(input, hi_mask, lo_mask);
+        }
 
-    let hi_tbl = load_16(hi_mask);
-    let lo_tbl = load_16(lo_mask);
-    let mask_0f = vdupq_n_u8(0x0f);
-    let agg = if len <= 32 {
-        let first = input
-            .first_chunk::<16>()
-            .expect("input has at least 16 bytes");
-        let c0 = classify_16(first, hi_tbl, lo_tbl, mask_0f);
-        if len == 16 {
-            c0
-        } else {
-            let last = input[len - 16..]
+        let hi_tbl = load_16(hi_mask);
+        let lo_tbl = load_16(lo_mask);
+        let mask_0f = vdupq_n_u8(0x0f);
+        let agg = if len <= 32 {
+            let first = input
                 .first_chunk::<16>()
                 .expect("input has at least 16 bytes");
-            vminq_u8(c0, classify_16(last, hi_tbl, lo_tbl, mask_0f))
-        }
-    } else if len <= 64 {
-        let first = input
-            .first_chunk::<32>()
-            .expect("input has at least 32 bytes");
-        let last = input[len - 32..]
-            .first_chunk::<32>()
-            .expect("input has at least 32 bytes");
-        vminq_u8(
-            classify_32(first, hi_tbl, lo_tbl, mask_0f),
-            classify_32(last, hi_tbl, lo_tbl, mask_0f),
-        )
-    } else {
-        let first = input
-            .first_chunk::<64>()
-            .expect("input has at least 64 bytes");
-        let last = input[len - 64..]
-            .first_chunk::<64>()
-            .expect("input has at least 64 bytes");
-        vminq_u8(
-            classify_64(first, hi_tbl, lo_tbl, mask_0f),
-            classify_64(last, hi_tbl, lo_tbl, mask_0f),
-        )
-    };
+            let c0 = classify_16(first, hi_tbl, lo_tbl, mask_0f);
+            if len == 16 {
+                c0
+            } else {
+                let last = input[len - 16..]
+                    .first_chunk::<16>()
+                    .expect("input has at least 16 bytes");
+                vminq_u8(c0, classify_16(last, hi_tbl, lo_tbl, mask_0f))
+            }
+        } else if len <= 64 {
+            let first = input
+                .first_chunk::<32>()
+                .expect("input has at least 32 bytes");
+            let last = input[len - 32..]
+                .first_chunk::<32>()
+                .expect("input has at least 32 bytes");
+            vminq_u8(
+                classify_32(first, hi_tbl, lo_tbl, mask_0f),
+                classify_32(last, hi_tbl, lo_tbl, mask_0f),
+            )
+        } else {
+            let first = input
+                .first_chunk::<64>()
+                .expect("input has at least 64 bytes");
+            let last = input[len - 64..]
+                .first_chunk::<64>()
+                .expect("input has at least 64 bytes");
+            vminq_u8(
+                classify_64(first, hi_tbl, lo_tbl, mask_0f),
+                classify_64(last, hi_tbl, lo_tbl, mask_0f),
+            )
+        };
 
-    if vminvq_u8(agg) == 0 {
-        return find_invalid_from(input, 0, hi_mask, lo_mask);
+        if vminvq_u8(agg) == 0 {
+            return find_invalid_from(input, 0, hi_mask, lo_mask);
+        }
+        Ok(len)
     }
-    Ok(len)
 }
 
 #[inline]

@@ -18,8 +18,6 @@
 use core::arch::x86 as x86_arch;
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64 as x86_arch;
-#[cfg(all(not(target_feature = "avx2"), feature = "std"))]
-use std::arch::is_x86_feature_detected;
 
 use x86_arch::__m128i;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -54,6 +52,9 @@ use x86_arch::_mm256_shuffle_epi8;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
 use x86_arch::_mm256_srli_epi16;
 
+use crate::backend::simd::X86Token;
+use crate::backend::simd::simd_fn;
+
 #[cfg(not(target_feature = "avx2"))]
 const SSSE3_BATCH_LEN: usize = 64;
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -65,33 +66,12 @@ pub fn validate(input: &[u8], hi_mask: &[u8; 16], lo_mask: &[u8; 16]) -> Result<
         return Ok(0);
     }
 
-    #[cfg(target_feature = "avx2")]
-    {
-        // SAFETY: `target_feature = "avx2"` is enabled at compile time.
-        unsafe { validate_avx2(input, hi_mask, lo_mask) }
-    }
-
-    #[cfg(all(not(target_feature = "avx2"), feature = "std"))]
-    {
-        if is_x86_feature_detected!("avx2") {
-            // SAFETY: Runtime detection confirmed AVX2 support.
-            unsafe { validate_avx2(input, hi_mask, lo_mask) }
-        } else if is_x86_feature_detected!("ssse3") {
-            // SAFETY: Runtime detection confirmed SSSE3 support.
-            unsafe { validate_ssse3(input, hi_mask, lo_mask) }
-        } else {
-            Ok(0)
-        }
-    }
-
-    #[cfg(all(
-        not(target_feature = "avx2"),
-        not(feature = "std"),
-        target_feature = "ssse3"
-    ))]
-    {
-        // SAFETY: `target_feature = "ssse3"` is enabled at compile time.
-        unsafe { validate_ssse3(input, hi_mask, lo_mask) }
+    match X86Token::detect() {
+        #[cfg(any(feature = "std", target_feature = "avx2"))]
+        Some(X86Token::Avx2(token)) => validate_avx2(token, input, hi_mask, lo_mask),
+        #[cfg(not(target_feature = "avx2"))]
+        Some(X86Token::Ssse3(token)) => validate_ssse3(token, input, hi_mask, lo_mask),
+        None => Ok(0),
     }
 }
 
@@ -138,67 +118,73 @@ fn classify_64_ssse3(chunk: &[u8; 64], hi: __m128i, lo: __m128i, mask_0f: __m128
     )
 }
 
-#[cfg(not(target_feature = "avx2"))]
-#[target_feature(enable = "ssse3")]
-fn validate_ssse3(input: &[u8], hi_mask: &[u8; 16], lo_mask: &[u8; 16]) -> Result<usize, usize> {
-    let len = input.len();
-    let hi = load_16(hi_mask);
-    let lo = load_16(lo_mask);
-    let mask_0f = _mm_set1_epi8(0x0f);
-    let zero = _mm_setzero_si128();
-    let mut checked = 0;
+simd_fn! {
+    #[cfg(not(target_feature = "avx2"))]
+    fn validate_ssse3(
+        _token: Ssse3Token,
+        input: &[u8],
+        hi_mask: &[u8; 16],
+        lo_mask: &[u8; 16],
+    ) -> Result<usize, usize> {
+        let len = input.len();
+        let hi = load_16(hi_mask);
+        let lo = load_16(lo_mask);
+        let mask_0f = _mm_set1_epi8(0x0f);
+        let zero = _mm_setzero_si128();
+        let mut checked = 0;
 
-    for batch in input.as_chunks::<SSSE3_BATCH_LEN>().0 {
-        let agg = classify_64_ssse3(batch, hi, lo, mask_0f);
-        if _mm_movemask_epi8(_mm_cmpeq_epi8(agg, zero)) != 0 {
-            return find_invalid_ssse3_from(input, checked, hi_mask, lo_mask);
+        for batch in input.as_chunks::<SSSE3_BATCH_LEN>().0 {
+            let agg = classify_64_ssse3(batch, hi, lo, mask_0f);
+            if _mm_movemask_epi8(_mm_cmpeq_epi8(agg, zero)) != 0 {
+                return find_invalid_ssse3_from(input, checked, hi_mask, lo_mask);
+            }
+            checked += SSSE3_BATCH_LEN;
         }
-        checked += SSSE3_BATCH_LEN;
-    }
 
-    let rem = len - checked;
-    if rem != 0 {
-        let agg = if len < 32 {
-            let first = input
-                .first_chunk::<16>()
-                .expect("input has at least 16 bytes");
-            let c0 = classify_16_bytes(first, hi, lo, mask_0f);
-            if len == 16 {
-                c0
-            } else {
+        let rem = len - checked;
+        if rem != 0 {
+            let agg = if len < 32 {
+                let first = input
+                    .first_chunk::<16>()
+                    .expect("input has at least 16 bytes");
+                let c0 = classify_16_bytes(first, hi, lo, mask_0f);
+                if len == 16 {
+                    c0
+                } else {
+                    let last = input[len - 16..]
+                        .first_chunk::<16>()
+                        .expect("input has at least 16 bytes");
+                    _mm_min_epu8(c0, classify_16_bytes(last, hi, lo, mask_0f))
+                }
+            } else if rem <= 16 {
                 let last = input[len - 16..]
                     .first_chunk::<16>()
                     .expect("input has at least 16 bytes");
-                _mm_min_epu8(c0, classify_16_bytes(last, hi, lo, mask_0f))
+                classify_16_bytes(last, hi, lo, mask_0f)
+            } else if rem <= 32 {
+                let last = input[len - 32..]
+                    .first_chunk::<32>()
+                    .expect("input has at least 32 bytes");
+                classify_32_ssse3(last, hi, lo, mask_0f)
+            } else {
+                let head = input[checked..]
+                    .first_chunk::<32>()
+                    .expect("remaining tail has at least 32 bytes");
+                let last = input[len - 32..]
+                    .first_chunk::<32>()
+                    .expect("input has at least 32 bytes");
+                _mm_min_epu8(
+                    classify_32_ssse3(head, hi, lo, mask_0f),
+                    classify_32_ssse3(last, hi, lo, mask_0f),
+                )
+            };
+            if _mm_movemask_epi8(_mm_cmpeq_epi8(agg, zero)) != 0 {
+                return find_invalid_ssse3_from(input, checked, hi_mask, lo_mask);
             }
-        } else if rem <= 16 {
-            let last = input[len - 16..]
-                .first_chunk::<16>()
-                .expect("input has at least 16 bytes");
-            classify_16_bytes(last, hi, lo, mask_0f)
-        } else if rem <= 32 {
-            let last = input[len - 32..]
-                .first_chunk::<32>()
-                .expect("input has at least 32 bytes");
-            classify_32_ssse3(last, hi, lo, mask_0f)
-        } else {
-            let head = input[checked..]
-                .first_chunk::<32>()
-                .expect("remaining tail has at least 32 bytes");
-            let last = input[len - 32..]
-                .first_chunk::<32>()
-                .expect("input has at least 32 bytes");
-            _mm_min_epu8(
-                classify_32_ssse3(head, hi, lo, mask_0f),
-                classify_32_ssse3(last, hi, lo, mask_0f),
-            )
-        };
-        if _mm_movemask_epi8(_mm_cmpeq_epi8(agg, zero)) != 0 {
-            return find_invalid_ssse3_from(input, checked, hi_mask, lo_mask);
         }
-    }
 
-    Ok(len)
+        Ok(len)
+    }
 }
 
 #[cfg(not(target_feature = "avx2"))]
@@ -285,80 +271,85 @@ fn classify_128_avx2(chunk: &[u8; 128], hi: __m256i, lo: __m256i, mask_0f: __m25
     )
 }
 
-#[cfg(any(feature = "std", target_feature = "avx2"))]
-#[inline]
-#[target_feature(enable = "avx2")]
-fn validate_avx2(input: &[u8], hi_mask: &[u8; 16], lo_mask: &[u8; 16]) -> Result<usize, usize> {
-    let len = input.len();
-    if len < 32 {
-        let hi = load_16(hi_mask);
-        let lo = load_16(lo_mask);
-        let mask_0f = _mm_set1_epi8(0x0f);
-        let first = input
-            .first_chunk::<16>()
-            .expect("input has at least 16 bytes");
-        let c0 = classify_16_bytes(first, hi, lo, mask_0f);
-        let agg = if len == 16 {
-            c0
-        } else {
-            let last = input[len - 16..]
+simd_fn! {
+    #[cfg(any(feature = "std", target_feature = "avx2"))]
+    fn validate_avx2(
+        _token: Avx2Token,
+        input: &[u8],
+        hi_mask: &[u8; 16],
+        lo_mask: &[u8; 16],
+    ) -> Result<usize, usize> {
+        let len = input.len();
+        if len < 32 {
+            let hi = load_16(hi_mask);
+            let lo = load_16(lo_mask);
+            let mask_0f = _mm_set1_epi8(0x0f);
+            let first = input
                 .first_chunk::<16>()
                 .expect("input has at least 16 bytes");
-            _mm_min_epu8(c0, classify_16_bytes(last, hi, lo, mask_0f))
-        };
-        if _mm_movemask_epi8(_mm_cmpeq_epi8(agg, _mm_setzero_si128())) != 0 {
-            return find_invalid_avx2_from(input, 0, hi_mask, lo_mask);
+            let c0 = classify_16_bytes(first, hi, lo, mask_0f);
+            let agg = if len == 16 {
+                c0
+            } else {
+                let last = input[len - 16..]
+                    .first_chunk::<16>()
+                    .expect("input has at least 16 bytes");
+                _mm_min_epu8(c0, classify_16_bytes(last, hi, lo, mask_0f))
+            };
+            if _mm_movemask_epi8(_mm_cmpeq_epi8(agg, _mm_setzero_si128())) != 0 {
+                return find_invalid_avx2_from(input, 0, hi_mask, lo_mask);
+            }
+            return Ok(len);
         }
-        return Ok(len);
-    }
-    if len >= AVX2_BATCH_LEN {
-        return validate_avx2_bulk(input, hi_mask, lo_mask);
-    }
+        if len >= AVX2_BATCH_LEN {
+            return validate_avx2_bulk(input, hi_mask, lo_mask);
+        }
 
-    let hi = _mm256_broadcastsi128_si256(load_16(hi_mask));
-    let lo = _mm256_broadcastsi128_si256(load_16(lo_mask));
-    let mask_0f = _mm256_set1_epi8(0x0f);
-    let agg = if len <= 64 {
-        let first = input
-            .first_chunk::<32>()
-            .expect("input has at least 32 bytes");
-        let c0 = classify_32_avx2(first, hi, lo, mask_0f);
-        if len == 32 {
-            c0
-        } else {
-            let last = input[len - 32..]
+        let hi = _mm256_broadcastsi128_si256(load_16(hi_mask));
+        let lo = _mm256_broadcastsi128_si256(load_16(lo_mask));
+        let mask_0f = _mm256_set1_epi8(0x0f);
+        let agg = if len <= 64 {
+            let first = input
                 .first_chunk::<32>()
                 .expect("input has at least 32 bytes");
-            _mm256_min_epu8(c0, classify_32_avx2(last, hi, lo, mask_0f))
-        }
-    } else if len <= 128 {
-        let first = input
-            .first_chunk::<64>()
-            .expect("input has at least 64 bytes");
-        let last = input[len - 64..]
-            .first_chunk::<64>()
-            .expect("input has at least 64 bytes");
-        _mm256_min_epu8(
-            classify_64_avx2(first, hi, lo, mask_0f),
-            classify_64_avx2(last, hi, lo, mask_0f),
-        )
-    } else {
-        let first = input
-            .first_chunk::<128>()
-            .expect("input has at least 128 bytes");
-        let last = input[len - 128..]
-            .first_chunk::<128>()
-            .expect("input has at least 128 bytes");
-        _mm256_min_epu8(
-            classify_128_avx2(first, hi, lo, mask_0f),
-            classify_128_avx2(last, hi, lo, mask_0f),
-        )
-    };
+            let c0 = classify_32_avx2(first, hi, lo, mask_0f);
+            if len == 32 {
+                c0
+            } else {
+                let last = input[len - 32..]
+                    .first_chunk::<32>()
+                    .expect("input has at least 32 bytes");
+                _mm256_min_epu8(c0, classify_32_avx2(last, hi, lo, mask_0f))
+            }
+        } else if len <= 128 {
+            let first = input
+                .first_chunk::<64>()
+                .expect("input has at least 64 bytes");
+            let last = input[len - 64..]
+                .first_chunk::<64>()
+                .expect("input has at least 64 bytes");
+            _mm256_min_epu8(
+                classify_64_avx2(first, hi, lo, mask_0f),
+                classify_64_avx2(last, hi, lo, mask_0f),
+            )
+        } else {
+            let first = input
+                .first_chunk::<128>()
+                .expect("input has at least 128 bytes");
+            let last = input[len - 128..]
+                .first_chunk::<128>()
+                .expect("input has at least 128 bytes");
+            _mm256_min_epu8(
+                classify_128_avx2(first, hi, lo, mask_0f),
+                classify_128_avx2(last, hi, lo, mask_0f),
+            )
+        };
 
-    if _mm256_movemask_epi8(_mm256_cmpeq_epi8(agg, _mm256_setzero_si256())) != 0 {
-        return find_invalid_avx2_from(input, 0, hi_mask, lo_mask);
+        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(agg, _mm256_setzero_si256())) != 0 {
+            return find_invalid_avx2_from(input, 0, hi_mask, lo_mask);
+        }
+        Ok(len)
     }
-    Ok(len)
 }
 
 #[cfg(any(feature = "std", target_feature = "avx2"))]
@@ -481,22 +472,18 @@ fn find_invalid_avx2_from(
 
 #[cfg(all(test, not(target_feature = "avx2"), feature = "std", not(miri)))]
 mod tests {
-    use std::arch::is_x86_feature_detected;
-
     use super::*;
     use crate::backend::base64::HI_MASK;
     use crate::backend::base64::LO_MASK_STD;
+    use crate::backend::simd::Ssse3Token;
 
     #[test]
     fn ssse3_reports_earliest_invalid_offset_across_batches_and_overlapping_tails() {
-        if !is_x86_feature_detected!("ssse3") {
+        let Some(token) = Ssse3Token::detect() else {
             return;
-        }
-        // Runtime dispatch selects AVX2 on modern x86 hosts; exercise SSSE3 directly.
-        let check = |slice: &[u8]| {
-            // SAFETY: Runtime feature detection above confirmed SSSE3 support.
-            unsafe { validate_ssse3(slice, &HI_MASK, &LO_MASK_STD) }
         };
+        // Runtime dispatch selects AVX2 on modern x86 hosts; exercise SSSE3 directly.
+        let check = |slice: &[u8]| validate_ssse3(token, slice, &HI_MASK, &LO_MASK_STD);
         let mut full = [b'A'; 95];
         for len in [16, 23, 32, 41, 64, 95] {
             let buf = &mut full[..len];

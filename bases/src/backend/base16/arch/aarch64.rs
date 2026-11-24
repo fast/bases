@@ -42,6 +42,8 @@ use core::mem::MaybeUninit;
 
 use crate::backend::base16::LO_MASK;
 use crate::backend::base16::select_hi_mask;
+use crate::backend::simd::NeonToken;
+use crate::backend::simd::simd_fn;
 
 const UPPER_HEX: &[u8; 16] = b"0123456789ABCDEF";
 const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
@@ -52,8 +54,7 @@ pub fn encode<const UPPERCASE: bool>(
     input: &[u8],
     output: &mut [MaybeUninit<u8>],
 ) -> (usize, usize) {
-    // SAFETY: `target_feature = "neon"` is enabled at compile time for this module.
-    unsafe { encode_neon::<UPPERCASE>(input, output) }
+    encode_neon::<UPPERCASE>(NeonToken::summon(), input, output)
 }
 
 #[inline]
@@ -114,67 +115,68 @@ fn encode_16_neon(
     (vzip1q_u8(hi, lo), vzip2q_u8(hi, lo))
 }
 
-#[inline]
-#[target_feature(enable = "neon")]
-fn encode_neon<const UPPERCASE: bool>(
-    input: &[u8],
-    output: &mut [MaybeUninit<u8>],
-) -> (usize, usize) {
-    let consumed = input.len().min(output.len() / 2) & !7;
-    if consumed == 0 {
-        return (0, 0);
-    }
-
-    let hex_tbl = load_16(if UPPERCASE { UPPER_HEX } else { LOWER_HEX });
-    let mask_0f = vdupq_n_u8(0x0f);
-    let mut in_ptr = input.as_ptr();
-    let mut out_ptr = output.as_mut_ptr().cast::<u8>();
-    let mut rem = consumed;
-
-    while rem >= 32 {
-        // SAFETY: `rem <= consumed <= input.len()` guarantees 32 readable bytes at `in_ptr`.
-        let (v0, v1) = unsafe { (vld1q_u8(in_ptr), vld1q_u8(in_ptr.add(16))) };
-        let (out0, out1) = encode_16_neon(v0, hex_tbl, mask_0f);
-        let (out2, out3) = encode_16_neon(v1, hex_tbl, mask_0f);
-
-        // SAFETY: `rem * 2 <= consumed * 2 <= output.len()` guarantees 64 writable bytes at
-        // `out_ptr`, and advancing by 32 and 64 bytes stays within both buffers.
-        unsafe {
-            vst1q_u8(out_ptr, out0);
-            vst1q_u8(out_ptr.add(16), out1);
-            vst1q_u8(out_ptr.add(32), out2);
-            vst1q_u8(out_ptr.add(48), out3);
-            in_ptr = in_ptr.add(32);
-            out_ptr = out_ptr.add(64);
+simd_fn! {
+    fn encode_neon<const UPPERCASE: bool>(
+        _token: NeonToken,
+        input: &[u8],
+        output: &mut [MaybeUninit<u8>],
+    ) -> (usize, usize) {
+        let consumed = input.len().min(output.len() / 2) & !7;
+        if consumed == 0 {
+            return (0, 0);
         }
-        rem -= 32;
-    }
 
-    if rem >= 16 {
-        // SAFETY: `rem >= 16` guarantees 16 readable bytes at `in_ptr`.
-        let v = unsafe { vld1q_u8(in_ptr) };
-        let (out0, out1) = encode_16_neon(v, hex_tbl, mask_0f);
+        let hex_tbl = load_16(if UPPERCASE { UPPER_HEX } else { LOWER_HEX });
+        let mask_0f = vdupq_n_u8(0x0f);
+        let mut in_ptr = input.as_ptr();
+        let mut out_ptr = output.as_mut_ptr().cast::<u8>();
+        let mut rem = consumed;
 
-        // SAFETY: `rem * 2 >= 32` guarantees 32 writable bytes at `out_ptr`, and advancing by 16
-        // and 32 bytes stays within both buffers.
-        unsafe {
-            vst1q_u8(out_ptr, out0);
-            vst1q_u8(out_ptr.add(16), out1);
-            in_ptr = in_ptr.add(16);
-            out_ptr = out_ptr.add(32);
+        while rem >= 32 {
+            // SAFETY: `rem <= consumed <= input.len()` guarantees 32 readable bytes at `in_ptr`.
+            let (v0, v1) = unsafe { (vld1q_u8(in_ptr), vld1q_u8(in_ptr.add(16))) };
+            let (out0, out1) = encode_16_neon(v0, hex_tbl, mask_0f);
+            let (out2, out3) = encode_16_neon(v1, hex_tbl, mask_0f);
+
+            // SAFETY: `rem * 2 <= consumed * 2 <= output.len()` guarantees 64 writable bytes at
+            // `out_ptr`, and advancing by 32 and 64 bytes stays within both buffers.
+            unsafe {
+                vst1q_u8(out_ptr, out0);
+                vst1q_u8(out_ptr.add(16), out1);
+                vst1q_u8(out_ptr.add(32), out2);
+                vst1q_u8(out_ptr.add(48), out3);
+                in_ptr = in_ptr.add(32);
+                out_ptr = out_ptr.add(64);
+            }
+            rem -= 32;
         }
-        rem -= 16;
-    }
 
-    if rem >= 8 {
-        // SAFETY: `rem >= 8` guarantees 8 readable bytes at `in_ptr`.
-        let v8 = unsafe { vld1_u8(in_ptr) };
-        let (out, _) = encode_16_neon(vcombine_u8(v8, v8), hex_tbl, mask_0f);
-        // SAFETY: `rem * 2 >= 16` guarantees 16 writable bytes at `out_ptr`.
-        unsafe { vst1q_u8(out_ptr, out) };
-    }
+        if rem >= 16 {
+            // SAFETY: `rem >= 16` guarantees 16 readable bytes at `in_ptr`.
+            let v = unsafe { vld1q_u8(in_ptr) };
+            let (out0, out1) = encode_16_neon(v, hex_tbl, mask_0f);
 
-    (consumed, consumed * 2)
+            // SAFETY: `rem * 2 >= 32` guarantees 32 writable bytes at `out_ptr`, and advancing by 16
+            // and 32 bytes stays within both buffers.
+            unsafe {
+                vst1q_u8(out_ptr, out0);
+                vst1q_u8(out_ptr.add(16), out1);
+                in_ptr = in_ptr.add(16);
+                out_ptr = out_ptr.add(32);
+            }
+            rem -= 16;
+        }
+
+        if rem >= 8 {
+            // SAFETY: `rem >= 8` guarantees 8 readable bytes at `in_ptr`.
+            let v8 = unsafe { vld1_u8(in_ptr) };
+            let (out, _) = encode_16_neon(vcombine_u8(v8, v8), hex_tbl, mask_0f);
+            // SAFETY: `rem * 2 >= 16` guarantees 16 writable bytes at `out_ptr`.
+            unsafe { vst1q_u8(out_ptr, out) };
+        }
+
+        (consumed, consumed * 2)
+    }
 }
 
 /// # Safety
