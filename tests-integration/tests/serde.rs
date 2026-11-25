@@ -15,8 +15,11 @@
 use bases::Base16Lower;
 use bases::base16;
 use bases::policy;
+use bases::serde::Array;
 use serde::Deserialize;
 use serde::Serialize;
+
+type DigestHex = Array<Base16Lower, 4>;
 
 type Base16UpperStrict = base16::Base16<policy::Upper, policy::Strict>;
 
@@ -28,10 +31,7 @@ struct Record {
     cursor: Vec<u8>,
     #[serde(with = "bases::Base32")]
     tag: Vec<u8>,
-    #[serde(
-        serialize_with = "Base16Lower::serialize",
-        deserialize_with = "Base16Lower::deserialize_array"
-    )]
+    #[serde(with = "DigestHex")]
     digest: [u8; 4],
     #[serde(
         serialize_with = "Base16UpperStrict::serialize",
@@ -93,5 +93,52 @@ fn serde_rejects_malformed_wrong_length_and_wrong_type_inputs() {
 
     for bad in bad_cases {
         assert!(serde_json::from_str::<Record>(bad).is_err(), "input: {bad}");
+    }
+}
+
+#[test]
+fn optional_vectors_preserve_absent_and_empty_values() {
+    #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+    struct Record {
+        #[serde(default, with = "bases::serde::OptionalVec::<bases::Base64>")]
+        payload: Option<Vec<u8>>,
+    }
+
+    for (payload, json) in [
+        (None, r#"{"payload":null}"#),
+        (Some(Vec::new()), r#"{"payload":""}"#),
+        (Some(b"f".to_vec()), r#"{"payload":"Zg=="}"#),
+    ] {
+        let record = Record { payload };
+        assert_eq!(serde_json::to_string(&record).unwrap(), json);
+        assert_eq!(serde_json::from_str::<Record>(json).unwrap(), record);
+    }
+    assert_eq!(serde_json::from_str::<Record>("{}").unwrap().payload, None);
+    for json in [
+        r#"{"payload":"Zh=="}"#,
+        r#"{"payload":"!g=="}"#,
+        r#"{"payload":"Zg"}"#,
+        r#"{"payload":42}"#,
+        r#"{"payload":[102]}"#,
+    ] {
+        assert!(serde_json::from_str::<Record>(json).is_err(), "{json}");
+    }
+}
+
+#[test]
+fn optional_fields_require_default_to_accept_missing_values() {
+    #[derive(Deserialize)]
+    struct Record {
+        #[serde(with = "bases::serde::OptionalVec::<bases::Base64>")]
+        payload: Option<Vec<u8>>,
+        #[serde(with = "bases::serde::OptionalArray::<bases::Base16Lower, 4>")]
+        digest: Option<[u8; 4]>,
+    }
+
+    let absent: Record = serde_json::from_str(r#"{"payload":null,"digest":null}"#).unwrap();
+    assert_eq!(absent.payload, None);
+    assert_eq!(absent.digest, None);
+    for json in ["{}", r#"{"payload":null}"#, r#"{"digest":null}"#] {
+        assert!(serde_json::from_str::<Record>(json).is_err(), "{json}");
     }
 }
