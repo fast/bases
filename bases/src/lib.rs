@@ -39,7 +39,12 @@
 //!
 //! # Profiles
 //!
-//! Ten crate-root profile aliases cover the standard RFC 4648 configurations:
+//! For hexadecimal decoding, both [`Base16Lower`] and [`Base16Upper`] accept mixed-case input.
+//! Use [`Base16Lower`] to preserve lowercase output when migrating from `hex::encode`.
+//!
+//! For JWS Base64URL fields, use [`Base64UrlUnpadded`]. [RFC 7515 §2](https://www.rfc-editor.org/rfc/rfc7515.html#section-2)
+//!
+//! The crate-root aliases cover the standard RFC 4648 configurations.
 //!
 //! | Profile               | Encoding            | Output & padding    | Decode policy             |
 //! |-----------------------|---------------------|---------------------|---------------------------|
@@ -56,10 +61,30 @@
 //!
 //! Configurable zero-sized family types ([`base16::Base16`], [`base32::Base32`], and
 //! [`base64::Base64`]) accept [`policy`] markers for additional combinations, such as strict
-//! single-case Base16 (`base16::Base16<policy::Lower, policy::Strict>`) or RFC 5155 Base32Hex
-//! (`base32::Base32<base32::ExtendedHex, policy::Unpadded, policy::Lower, policy::Mixed>`). Every
-//! profile exposes inherent methods directly without requiring trait imports, and implements the
-//! sealed [`Codec`] trait for generic callers.
+//! single-case Base16 (`base16::Base16<policy::Lower, policy::Strict>`). Every profile exposes
+//! inherent methods directly without requiring trait imports, and implements the sealed [`Codec`]
+//! trait for generic callers.
+//!
+//! Give a custom combination a local alias so the type arguments are fixed at each call site.
+//! In NSEC3 zone files, the Next Hashed Owner Name field uses unpadded Base32Hex and accepts
+//! either letter case. This example emits lowercase text. [RFC 5155 §3.3](https://www.rfc-editor.org/rfc/rfc5155.html#section-3.3)
+//!
+//! ```
+//! use bases::base32::Base32;
+//! use bases::base32::ExtendedHex;
+//! use bases::policy::Lower;
+//! use bases::policy::Mixed;
+//! use bases::policy::Unpadded;
+//!
+//! type Nsec3Hash = Base32<ExtendedHex, Unpadded, Lower, Mixed>;
+//!
+//! let digest = Nsec3Hash::decode_array::<20>("0P9MHAVEQVM6T7VBL5LOP2U3T2RP3TOM").unwrap();
+//! let mut output = [0; 32];
+//! assert_eq!(
+//!     Nsec3Hash::encode_into(&digest, &mut output).unwrap(),
+//!     "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom"
+//! );
+//! ```
 //!
 //! To decode both fully padded and unpadded Base32 or Base64 input, choose
 //! [`policy::PaddedOptional`] for padded output or [`policy::UnpaddedOptional`] for unpadded
@@ -148,33 +173,51 @@ pub type Base16Upper = base16::Base16<policy::Upper, policy::Mixed>;
 
 /// The padded RFC 4648 Base32 profile.
 ///
-/// Encoding uses uppercase letters; decoding rejects lowercase input.
+/// Encoding uses uppercase letters and adds padding as needed. Decoding requires
+/// uppercase input with canonical padding.
 pub type Base32 = base32::Base32<base32::Standard, policy::Padded, policy::Upper, policy::Strict>;
 
 /// The unpadded form of [`Base32`].
+///
+/// Encoding emits uppercase text without padding. Decoding requires unpadded uppercase input.
 pub type Base32Unpadded =
     base32::Base32<base32::Standard, policy::Unpadded, policy::Upper, policy::Strict>;
 
 /// The padded RFC 4648 Base32 Extended Hex profile.
 ///
-/// Encoding uses uppercase letters; decoding rejects lowercase input.
+/// Encoding uses uppercase letters and adds padding as needed. Decoding requires
+/// uppercase input with canonical padding.
 pub type Base32Hex =
     base32::Base32<base32::ExtendedHex, policy::Padded, policy::Upper, policy::Strict>;
 
 /// The unpadded form of [`Base32Hex`].
+///
+/// Encoding emits uppercase text without padding. Decoding requires unpadded uppercase input.
 pub type Base32HexUnpadded =
     base32::Base32<base32::ExtendedHex, policy::Unpadded, policy::Upper, policy::Strict>;
 
 /// The padded RFC 4648 Base64 profile.
+///
+/// Encoding uses the standard alphabet and adds padding as needed. Decoding requires
+/// the standard alphabet and canonical padding.
 pub type Base64 = base64::Base64<base64::Standard, policy::Padded>;
 
 /// The unpadded RFC 4648 Base64 profile.
+///
+/// Encoding emits text in the standard alphabet without padding. Decoding requires
+/// unpadded input in the standard alphabet.
 pub type Base64Unpadded = base64::Base64<base64::Standard, policy::Unpadded>;
 
 /// The padded RFC 4648 Base64URL profile.
+///
+/// Encoding uses the URL-safe alphabet and adds padding as needed. Decoding requires
+/// the URL-safe alphabet and canonical padding.
 pub type Base64Url = base64::Base64<base64::UrlSafe, policy::Padded>;
 
 /// The unpadded RFC 4648 Base64URL profile.
+///
+/// Encoding emits text in the URL-safe alphabet without padding. Decoding requires
+/// unpadded input in the URL-safe alphabet. Use this profile for JWS Base64URL fields.
 pub type Base64UrlUnpadded = base64::Base64<base64::UrlSafe, policy::Unpadded>;
 
 #[cfg(test)]

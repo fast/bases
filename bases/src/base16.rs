@@ -57,6 +57,38 @@ use crate::serde;
 /// The type parameters select the encoded letter case (`Case`, defaulting to
 /// [`policy::Lower`]) and decoding case policy (`DecodeCase`, defaulting to
 /// [`policy::Mixed`]).
+///
+/// Use [`Base16Lower`](crate::Base16Lower) or [`Base16Upper`](crate::Base16Upper)
+/// to select the output case and accept mixed-case input.
+///
+/// ```
+/// use bases::Base16Lower;
+/// use bases::Base16Upper;
+///
+/// let bytes = [0xde, 0xad];
+/// let mut output = [0; 4];
+/// assert_eq!(
+///     Base16Lower::encode_into(&bytes, &mut output).unwrap(),
+///     "dead"
+/// );
+/// assert_eq!(
+///     Base16Upper::encode_into(&bytes, &mut output).unwrap(),
+///     "DEAD"
+/// );
+/// assert_eq!(Base16Lower::decode_array::<2>("DeAd").unwrap(), bytes);
+/// assert_eq!(Base16Upper::decode_array::<2>("DeAd").unwrap(), bytes);
+/// ```
+///
+/// A call written as `Base16::decode_array::<2>` leaves the two policy parameters
+/// to inference. The input and result types are the same for every policy
+/// combination. Write `<Base16>::decode_array` to apply the defaults in a type
+/// position.
+///
+/// ```
+/// use bases::base16::Base16;
+///
+/// assert_eq!(<Base16>::decode_array::<2>("DeAd").unwrap(), [0xde, 0xad]);
+/// ```
 pub struct Base16<Case = policy::Lower, DecodeCase = policy::Mixed>(
     PhantomData<(Case, DecodeCase)>,
 );
