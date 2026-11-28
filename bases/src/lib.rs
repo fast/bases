@@ -54,12 +54,18 @@
 //! | [`Base64Url`]         | RFC 4648 Base64URL  | padded              | URL-safe alphabet, padded |
 //! | [`Base64UrlUnpadded`] | RFC 4648 Base64URL  | unpadded            | URL-safe alphabet, no pad |
 //!
+//! Use [`Base16Lower`] for the same lowercase output as `hex::encode`. For JWS Base64URL fields,
+//! use [`Base64UrlUnpadded`]. [RFC 7515 §2](https://www.rfc-editor.org/rfc/rfc7515.html#section-2)
+//!
 //! Configurable zero-sized family types ([`base16::Base16`], [`base32::Base32`], and
 //! [`base64::Base64`]) accept [`policy`] markers for additional combinations, such as strict
-//! single-case Base16 (`base16::Base16<policy::Lower, policy::Strict>`) or RFC 5155 Base32Hex
-//! (`base32::Base32<base32::ExtendedHex, policy::Unpadded, policy::Lower, policy::Mixed>`). Every
-//! profile exposes inherent methods directly without requiring trait imports, and implements the
-//! sealed [`Codec`] trait for generic callers.
+//! single-case Base16 (`base16::Base16<policy::Lower, policy::Strict>`). Every profile exposes
+//! inherent methods directly without requiring trait imports, and implements the sealed [`Codec`]
+//! trait for generic callers.
+//!
+//! For the NSEC3 Next Hashed Owner Name field, use
+//! `base32::Base32<base32::ExtendedHex, policy::Unpadded, policy::Lower, policy::Mixed>`
+//! for lowercase output and case-insensitive decoding. [RFC 5155 §3.3](https://www.rfc-editor.org/rfc/rfc5155.html#section-3.3)
 //!
 //! To decode both fully padded and unpadded Base32 or Base64 input, choose
 //! [`policy::PaddedOptional`] for padded output or [`policy::UnpaddedOptional`] for unpadded
@@ -161,7 +167,7 @@ pub type Base32Unpadded =
 pub type Base32Hex =
     base32::Base32<base32::ExtendedHex, policy::Padded, policy::Upper, policy::Strict>;
 
-/// The unpadded form of [`Base32Hex`].
+/// The unpadded form of [`Base32Hex`]. Decoding requires uppercase input.
 pub type Base32HexUnpadded =
     base32::Base32<base32::ExtendedHex, policy::Unpadded, policy::Upper, policy::Strict>;
 

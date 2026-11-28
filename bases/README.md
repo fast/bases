@@ -29,15 +29,40 @@ assert_eq!(cursor, "aGVsbG8");
 
 ## Choose a profile
 
-Ten crate-root aliases cover standard encoding profiles:
+| Task                                       | Profile                         | Format                                             |
+| ------------------------------------------ | ------------------------------- | -------------------------------------------------- |
+| Decode hexadecimal                         | `Base16Lower` or `Base16Upper`  | Accepts either letter case, including mixed case.  |
+| Match `hex::encode` output                 | `Base16Lower`                   | Lowercase hexadecimal.                             |
+| Read or write a [JWS][jws] Base64URL field | `Base64UrlUnpadded`             | URL-safe Base64 without padding.                   |
+| Read or write an [NSEC3][nsec3] hash       | [`Nsec3Hash`](#custom-profiles) | Unpadded Base32Hex with case-insensitive decoding. |
 
-- `Base16Lower` and `Base16Upper` emit lowercase and uppercase hex respectively, and both accept either case when decoding.
-- `Base32` and `Base32Unpadded` use the uppercase RFC 4648 alphabet, with or without padding.
-- `Base32Hex` and `Base32HexUnpadded` use the uppercase extended-hex alphabet, with or without padding.
-- `Base64` and `Base64Unpadded` use the standard Base64 alphabet, with or without padding.
-- `Base64Url` and `Base64UrlUnpadded` use the URL-safe alphabet, with or without padding.
+[jws]: https://www.rfc-editor.org/rfc/rfc7515.html#section-2
+[nsec3]: https://www.rfc-editor.org/rfc/rfc5155.html#section-3.3
 
-Every profile exposes inherent methods without requiring trait imports, and implements the sealed `Codec` trait for generic callers. Configurable zero-sized family types (`base16::Base16`, `base32::Base32`, and `base64::Base64`) accept `policy` markers for other combinations, such as strict single-case Base16 or RFC 5155 Base32Hex with lowercase output and case-insensitive decoding. See the [API reference](https://docs.rs/bases) for types, methods, and their contracts.
+The [profile reference](https://docs.rs/bases/latest/bases/#profiles) lists the crate-root aliases and their decoding policies. Profiles expose inherent methods and implement the sealed `Codec` trait for generic callers.
+
+### Custom profiles
+
+To combine your own policies, give a configurable type from `base16`, `base32`, or `base64` a local alias. The NSEC3 Next Hashed Owner Name field in zone files accepts either letter case. This example encodes the hash in lowercase. [RFC 5155 Appendix A](https://www.rfc-editor.org/rfc/rfc5155.html#appendix-A)
+
+```rust
+use bases::base32::Base32;
+use bases::base32::ExtendedHex;
+use bases::policy::Lower;
+use bases::policy::Mixed;
+use bases::policy::Unpadded;
+
+type Nsec3Hash = Base32<ExtendedHex, Unpadded, Lower, Mixed>;
+
+let digest = Nsec3Hash::decode_array::<20>("0P9MHAVEQVM6T7VBL5LOP2U3T2RP3TOM").unwrap();
+let mut output = [0; 32];
+assert_eq!(
+    Nsec3Hash::encode_into(&digest, &mut output).unwrap(),
+    "0p9mhaveqvm6t7vbl5lop2u3t2rp3tom"
+);
+```
+
+See the [API reference](https://docs.rs/bases) for the family types and their policy parameters.
 
 For Base32 and Base64, the second type parameter selects the padding policy. The table shows how each policy handles the same byte with the standard Base64 alphabet.
 
