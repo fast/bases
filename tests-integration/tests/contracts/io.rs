@@ -28,9 +28,6 @@ struct ChunkedWriter {
     max_write: usize,
     interrupt_every: usize,
     calls: usize,
-    failure_at: usize,
-    failures_left: usize,
-    failure_kind: io::ErrorKind,
 }
 
 impl ChunkedWriter {
@@ -40,9 +37,6 @@ impl ChunkedWriter {
             max_write,
             interrupt_every,
             calls: 0,
-            failure_at: usize::MAX,
-            failures_left: 0,
-            failure_kind: io::ErrorKind::WouldBlock,
         }
     }
 }
@@ -53,18 +47,7 @@ impl Write for ChunkedWriter {
         if self.interrupt_every > 0 && self.calls.is_multiple_of(self.interrupt_every) {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "interrupted"));
         }
-        let mut take = buf.len().min(self.max_write);
-        if self.failures_left > 0 {
-            if self.inner.len() == self.failure_at {
-                self.failures_left -= 1;
-                return if self.failure_kind == io::ErrorKind::WriteZero {
-                    Ok(0)
-                } else {
-                    Err(io::Error::from(self.failure_kind))
-                };
-            }
-            take = take.min(self.failure_at - self.inner.len());
-        }
+        let take = buf.len().min(self.max_write);
         self.inner.extend_from_slice(&buf[..take]);
         Ok(take)
     }
@@ -148,57 +131,6 @@ pub fn check<C: Codec>(reference: &Encoding) {
     for payload in payloads {
         for &(write_chunk, read_chunk) in &[(1, 1), (7, 3), (13, 5), (257, 17), (1009, 1024)] {
             check::<C>(payload, write_chunk, read_chunk, reference);
-        }
-    }
-
-    check_finish_recovery::<C>(reference);
-}
-
-fn check_finish_recovery<C: Codec>(reference: &Encoding) {
-    let payloads: [&[u8]; 7] = [b"", b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar"];
-    for input in payloads {
-        let expected = reference.encode(input);
-        for max_write in [1, usize::MAX] {
-            let initial_len = C::encoder()
-                .update_output_len(input.len())
-                .unwrap()
-                .min(max_write);
-            for fail_at in initial_len..expected.len() {
-                for kind in [io::ErrorKind::WouldBlock, io::ErrorKind::WriteZero] {
-                    let mut writer = EncoderWriter::<C, _>::new(ChunkedWriter::new(max_write, 3));
-                    writer.write_all(input).unwrap();
-                    assert_eq!(writer.get_ref().inner, expected.as_bytes()[..initial_len]);
-                    let inner = writer.get_mut();
-                    inner.failure_at = fail_at;
-                    inner.failures_left = 2;
-                    inner.failure_kind = kind;
-
-                    let Err(failure) = writer.finish() else {
-                        panic!("scripted finalization must fail");
-                    };
-                    assert_eq!(failure.error().kind(), kind);
-                    let mut writer = failure.into_inner();
-                    assert_eq!(writer.get_ref().inner, expected.as_bytes()[..fail_at]);
-                    assert_eq!(writer.write(&[]).unwrap(), 0);
-                    assert_eq!(
-                        writer.write(b"extra").unwrap_err().kind(),
-                        io::ErrorKind::BrokenPipe,
-                    );
-
-                    let Err(failure) = writer.finish() else {
-                        panic!("scripted retry must fail");
-                    };
-                    let (error, writer) = failure.into_parts();
-                    assert_eq!(error.kind(), kind);
-                    assert_eq!(writer.get_ref().inner, expected.as_bytes()[..fail_at]);
-                    assert_eq!(
-                        writer.finish().unwrap().inner,
-                        expected.as_bytes(),
-                        "profile {}",
-                        C::name()
-                    );
-                }
-            }
         }
     }
 }

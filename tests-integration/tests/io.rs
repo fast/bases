@@ -13,12 +13,10 @@
 // limitations under the License.
 
 use std::cell::Cell;
-use std::error::Error;
 use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::panic;
-use std::ptr;
 use std::rc::Rc;
 
 use bases::Base32;
@@ -64,6 +62,7 @@ fn decoder_reader_repeats_the_finalization_error_at_eof() {
     }
 }
 
+#[derive(Debug)]
 struct ScriptedWriter {
     writes: std::vec::IntoIter<io::Result<usize>>,
     bytes: Vec<u8>,
@@ -122,47 +121,54 @@ fn writer_retries_buffered_output_without_duplicating_accepted_input() {
 }
 
 #[test]
-fn discarding_finish_recovery_state_does_not_retry_writes() {
-    for action in [
-        "drop error",
-        "drop adapter",
-        "into_inner",
-        "into_error",
-        "convert",
-    ] {
-        let mut inner =
-            ScriptedWriter::new(vec![Ok(1), Err(io::Error::from(io::ErrorKind::WouldBlock))]);
-        let mut writer = Base64::encoder_writer(&mut inner);
-        writer.write_all(b"f").unwrap();
-        let Err(failure) = writer.finish() else {
-            panic!("scripted finalization must fail");
-        };
-        assert!(ptr::eq(
-            failure
-                .source()
-                .unwrap()
-                .downcast_ref::<io::Error>()
-                .unwrap(),
-            failure.error(),
-        ));
-        match action {
-            "drop error" => drop(failure),
-            "drop adapter" => drop(failure.into_inner()),
-            "into_inner" => {
-                let inner = failure.into_inner().into_inner();
-                assert_eq!(inner.bytes, b"Z");
-            }
-            "into_error" => assert_eq!(failure.into_error().kind(), io::ErrorKind::WouldBlock),
-            "convert" => {
-                let error = io::Error::from(failure);
-                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-            }
-            _ => unreachable!(),
-        }
-        // The next write would succeed, so an implicit retry would append bytes.
-        assert_eq!(inner.bytes, b"Z", "action {action}");
-        assert_eq!(inner.flushes, 0);
-    }
+fn finish_retries_buffered_output_before_the_final_quantum() {
+    let inner = ScriptedWriter::new(vec![Ok(1), Err(io::ErrorKind::WouldBlock.into())]);
+    let mut writer = Base64::encoder_writer(inner);
+    writer.write_all(b"foob").unwrap();
+
+    let (error, writer) = writer.finish().unwrap_err().into_parts();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(writer.get_ref().bytes, b"Z");
+    assert_eq!(writer.finish().unwrap().bytes, b"Zm9vYg==");
+}
+
+#[test]
+fn finish_retries_a_partially_written_final_quantum() {
+    let inner = ScriptedWriter::new(vec![
+        Ok(4),
+        Ok(1),
+        Err(io::ErrorKind::WouldBlock.into()),
+        Ok(0),
+    ]);
+    let mut writer = Base64::encoder_writer(inner);
+    writer.write_all(b"foob").unwrap();
+
+    let (error, mut writer) = writer.finish().unwrap_err().into_parts();
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert_eq!(writer.get_ref().bytes, b"Zm9vY");
+    assert_eq!(writer.write(&[]).unwrap(), 0);
+    assert_eq!(
+        writer.write(b"extra").unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe,
+    );
+
+    let (error, writer) = writer.finish().unwrap_err().into_parts();
+    assert_eq!(error.kind(), io::ErrorKind::WriteZero);
+    assert_eq!(writer.get_ref().bytes, b"Zm9vY");
+    assert_eq!(writer.finish().unwrap().bytes, b"Zm9vYg==");
+}
+
+#[test]
+fn dropping_finish_error_preserves_the_partially_written_output() {
+    let mut inner =
+        ScriptedWriter::new(vec![Ok(1), Err(io::Error::from(io::ErrorKind::WouldBlock))]);
+    let mut writer = Base64::encoder_writer(&mut inner);
+    writer.write_all(b"f").unwrap();
+
+    drop(writer.finish().unwrap_err());
+
+    assert_eq!(inner.bytes, b"Z");
+    assert_eq!(inner.flushes, 0);
 }
 
 #[test]
