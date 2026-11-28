@@ -29,27 +29,17 @@ assert_eq!(cursor, "aGVsbG8");
 
 ## Choose a profile
 
-Start with the format you need to read or write.
-
-| Task                                                       | Profile                         | Format                                                  |
-| ---------------------------------------------------------- | ------------------------------- | ------------------------------------------------------- |
-| Decode hexadecimal                                         | `Base16Lower` or `Base16Upper`  | Both accept lowercase, uppercase, and mixed-case input. |
-| Encode lowercase hex with the same output as `hex::encode` | `Base16Lower`                   | Outputs lowercase hexadecimal.                          |
-| Read or write a [JWS][jws] Base64URL field                 | `Base64UrlUnpadded`             | Uses the URL-safe alphabet without padding.             |
-| Read or write an [NSEC3][nsec3] hash                       | [`Nsec3Hash`](#custom-profiles) | Uses unpadded Base32Hex and accepts either letter case. |
+| Task                                       | Profile                         | Format                                             |
+| ------------------------------------------ | ------------------------------- | -------------------------------------------------- |
+| Decode hexadecimal                         | `Base16Lower` or `Base16Upper`  | Accepts either letter case, including mixed case.  |
+| Match `hex::encode` output                 | `Base16Lower`                   | Lowercase hexadecimal.                             |
+| Read or write a [JWS][jws] Base64URL field | `Base64UrlUnpadded`             | URL-safe Base64 without padding.                   |
+| Read or write an [NSEC3][nsec3] hash       | [`Nsec3Hash`](#custom-profiles) | Unpadded Base32Hex with case-insensitive decoding. |
 
 [jws]: https://www.rfc-editor.org/rfc/rfc7515.html#section-2
 [nsec3]: https://www.rfc-editor.org/rfc/rfc5155.html#section-3.3
 
-The crate-root aliases cover these standard encoding profiles.
-
-- `Base16Lower` and `Base16Upper` emit lowercase and uppercase hex respectively, and both accept either case when decoding.
-- `Base32` and `Base32Unpadded` use the uppercase RFC 4648 alphabet, with or without padding.
-- `Base32Hex` and `Base32HexUnpadded` use the uppercase extended-hex alphabet, with or without padding.
-- `Base64` and `Base64Unpadded` use the standard Base64 alphabet, with or without padding.
-- `Base64Url` and `Base64UrlUnpadded` use the URL-safe alphabet, with or without padding.
-
-Every profile exposes inherent methods without requiring trait imports, and implements the sealed `Codec` trait for generic callers.
+The [profile reference](https://docs.rs/bases/latest/bases/#profiles) lists the crate-root aliases and their decoding policies. Profiles expose inherent methods and implement the sealed `Codec` trait for generic callers.
 
 ### Custom profiles
 
