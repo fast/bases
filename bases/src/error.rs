@@ -14,6 +14,8 @@
 
 use core::error::Error;
 use core::fmt;
+#[cfg(feature = "std")]
+use std::io;
 
 /// An encoding error.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,15 +150,23 @@ impl Error for DecodeSliceError {
     }
 }
 
-/// A finalization error together with the unchanged encoder or decoder.
+/// A finalization error together with the stream that failed to finish.
 ///
 /// Inspect [`error`](Self::error) for the cause. For buffer-size errors,
 /// recover the stream with [`into_inner`](Self::into_inner) and retry with
 /// a larger output buffer.
 ///
+/// For [`Encoder`](crate::Encoder) and [`Decoder`](crate::Decoder), the
+/// recovered stream is unchanged. With the `std` feature,
+/// `io::EncoderWriter` preserves any progress made
+/// before an I/O error so that retrying finalization resumes from the first
+/// unwritten byte. It no longer accepts input, and dropping its error does
+/// not retry finalization. See the finalization method for the recovered
+/// stream's state and permitted operations.
+///
 /// Converting this error into [`EncodeError`], [`DecodeError`], or
 /// [`DecodeSliceError`] discards the stream. This lets callers use `?` when
-/// recovery is not needed.
+/// recovery is not needed. With `std`, the same applies to `std::io::Error`.
 ///
 /// # Examples
 ///
@@ -197,7 +207,7 @@ impl<S, E> FinishError<S, E> {
         &self.error
     }
 
-    /// Recovers the unchanged stream, discarding the error.
+    /// Recovers the stream, discarding the error.
     #[must_use]
     pub fn into_inner(self) -> S {
         self.stream
@@ -209,7 +219,7 @@ impl<S, E> FinishError<S, E> {
         self.error
     }
 
-    /// Returns `(error, stream)`, preserving the unchanged stream state.
+    /// Returns `(error, stream)`, preserving the stream's state at failure.
     #[must_use]
     pub fn into_parts(self) -> (E, S) {
         (self.error, self.stream)
@@ -252,6 +262,13 @@ impl<S> From<FinishError<S, DecodeError>> for DecodeError {
 
 impl<S> From<FinishError<S, DecodeSliceError>> for DecodeSliceError {
     fn from(error: FinishError<S, DecodeSliceError>) -> Self {
+        error.into_error()
+    }
+}
+
+#[cfg(feature = "std")]
+impl<S> From<FinishError<S, io::Error>> for io::Error {
+    fn from(error: FinishError<S, io::Error>) -> Self {
         error.into_error()
     }
 }
