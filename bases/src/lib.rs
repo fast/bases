@@ -127,7 +127,8 @@ mod codec;
 mod display;
 mod error;
 #[cfg(feature = "serde")]
-mod serde;
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+pub mod serde;
 mod stream;
 
 pub use self::codec::Codec;

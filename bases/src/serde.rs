@@ -12,164 +12,302 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Serde adapters for encoded byte fields.
+//!
+//! Optional adapters preserve Serde's `Some` and `None` representation. In JSON,
+//! these are encoded strings and `null`. An empty encoded string is a present
+//! value and must satisfy the selected profile and array length.
+//!
+//! Use `#[serde(default, with = "...")]` to accept a missing optional field as
+//! `None`, and `skip_serializing_if = "Option::is_none"` to omit it when absent.
+
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
-use core::fmt;
 use core::marker::PhantomData;
 
 use serde_core::Deserializer;
 use serde_core::Serializer;
-use serde_core::de::Error;
-use serde_core::de::Visitor;
 
 use crate::Codec;
-use crate::codec;
 
-pub fn serialize<C, T, S>(bytes: &T, serializer: S) -> Result<S::Ok, S::Error>
-where
-    C: Codec,
-    T: ?Sized + AsRef<[u8]>,
-    S: Serializer,
-{
-    serializer.collect_str(&C::display(bytes.as_ref()))
-}
+pub(crate) mod internal;
 
-pub fn deserialize_array<'de, C, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>
-where
-    C: Codec,
-    D: Deserializer<'de>,
-{
-    struct ArrayVisitor<C, const N: usize>(PhantomData<C>);
+/// A Serde adapter for `[u8; N]` fields encoded with profile `C`.
+///
+/// Use this type with `#[serde(with = "...")]` directly or through a type alias.
+/// Serialization accepts exactly `[u8; N]`, and deserialization rejects input
+/// that does not decode to exactly `N` bytes.
+///
+/// The adapter works without `alloc`.
+/// Allocation by the serializer or deserializer depends on the format.
+///
+/// # Examples
+///
+/// ```
+/// use bases::Base16Lower;
+/// use bases::serde::Array;
+/// use serde::Deserialize;
+/// use serde::Serialize;
+///
+/// type DigestHex = Array<Base16Lower, 4>;
+///
+/// #[derive(Debug, PartialEq, Serialize, Deserialize)]
+/// struct Record {
+///     #[serde(with = "DigestHex")]
+///     digest: [u8; 4],
+/// }
+///
+/// let record = Record {
+///     digest: [0xde, 0xad, 0xbe, 0xef],
+/// };
+/// let json = r#"{"digest":"deadbeef"}"#;
+/// assert_eq!(serde_json::to_string(&record).unwrap(), json);
+/// assert_eq!(serde_json::from_str::<Record>(json).unwrap(), record);
+/// ```
+pub struct Array<C: Codec, const N: usize>(PhantomData<C>);
 
-    impl<C: Codec, const N: usize> Visitor<'_> for ArrayVisitor<C, N> {
-        type Value = [u8; N];
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(formatter, "a {} encoded string", C::name())
-        }
-
-        fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
-            codec::decode_array::<C, N>(value.as_bytes()).map_err(E::custom)
-        }
-
-        fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-            codec::decode_array::<C, N>(value).map_err(E::custom)
-        }
+impl<C: Codec, const N: usize> Array<C, N> {
+    /// Serializes a byte array as an encoded string using profile `C`.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error reported by `serializer`.
+    #[inline]
+    pub fn serialize<S: Serializer>(bytes: &[u8; N], serializer: S) -> Result<S::Ok, S::Error> {
+        internal::serialize::<C, _, S>(bytes, serializer)
     }
 
-    deserializer.deserialize_str(ArrayVisitor::<C, N>(PhantomData))
+    /// Deserializes an encoded string into a byte array using profile `C`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if the input is not a valid encoded
+    /// string for this profile or does not decode to exactly `N` bytes.
+    #[inline]
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; N], D::Error> {
+        internal::deserialize_array::<C, D, N>(deserializer)
+    }
 }
+
+/// A Serde adapter for `Option<[u8; N]>` fields encoded with profile `C`.
+///
+/// Present values follow [`Array`]'s encoding and exact-length rules. Absent
+/// values use Serde's `None` representation. This adapter works without `alloc`.
+///
+/// # Examples
+///
+/// ```
+/// use bases::Base16Lower;
+/// use bases::serde::OptionalArray;
+/// use serde::Deserialize;
+/// use serde::Serialize;
+///
+/// type MaybeDigest = OptionalArray<Base16Lower, 4>;
+///
+/// #[derive(Debug, PartialEq, Serialize, Deserialize)]
+/// struct Record {
+///     #[serde(default, with = "MaybeDigest", skip_serializing_if = "Option::is_none")]
+///     digest: Option<[u8; 4]>,
+/// }
+///
+/// let absent = Record { digest: None };
+/// assert_eq!(serde_json::from_str::<Record>("{}").unwrap(), absent);
+/// assert_eq!(serde_json::to_string(&absent).unwrap(), "{}");
+/// let json = r#"{"digest":"deadbeef"}"#;
+/// let present = Record {
+///     digest: Some([0xde, 0xad, 0xbe, 0xef]),
+/// };
+/// assert_eq!(serde_json::from_str::<Record>(json).unwrap(), present);
+/// assert_eq!(serde_json::to_string(&present).unwrap(), json);
+/// ```
+pub struct OptionalArray<C: Codec, const N: usize>(PhantomData<C>);
+
+impl<C: Codec, const N: usize> OptionalArray<C, N> {
+    /// Serializes an optional byte array using profile `C` for present values.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error reported by `serializer`.
+    #[inline]
+    pub fn serialize<S: Serializer>(
+        bytes: &Option<[u8; N]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        internal::serialize_option::<C, _, S>(bytes, serializer)
+    }
+
+    /// Deserializes an optional encoded string into a byte array using profile `C`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if a present value is not valid for the
+    /// profile or does not decode to exactly `N` bytes.
+    #[inline]
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<[u8; N]>, D::Error> {
+        internal::deserialize_optional_array::<C, D, N>(deserializer)
+    }
+}
+
+/// A Serde adapter for `Option<Vec<u8>>` fields encoded with profile `C`.
+///
+/// Present values follow the profile's encoding rules. Absent values use
+/// Serde's `None` representation; an empty encoded string decodes to `Some(Vec::new())`.
+///
+/// # Examples
+///
+/// ```
+/// use serde::Deserialize;
+/// use serde::Serialize;
+///
+/// #[derive(Debug, PartialEq, Serialize, Deserialize)]
+/// struct Record {
+///     #[serde(default, with = "bases::serde::OptionalVec::<bases::Base64>")]
+///     payload: Option<Vec<u8>>,
+/// }
+///
+/// let absent = Record { payload: None };
+/// assert_eq!(serde_json::from_str::<Record>("{}").unwrap(), absent);
+/// assert_eq!(
+///     serde_json::to_string(&absent).unwrap(),
+///     r#"{"payload":null}"#
+/// );
+/// let empty = Record {
+///     payload: Some(Vec::new()),
+/// };
+/// let json = r#"{"payload":""}"#;
+/// assert_eq!(serde_json::from_str::<Record>(json).unwrap(), empty);
+/// assert_eq!(serde_json::to_string(&empty).unwrap(), json);
+/// ```
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
+pub struct OptionalVec<C: Codec>(PhantomData<C>);
 
 #[cfg(feature = "alloc")]
-pub fn deserialize<'de, C, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-where
-    C: Codec,
-    D: Deserializer<'de>,
-{
-    struct VecVisitor<C>(PhantomData<C>);
-
-    impl<C: Codec> Visitor<'_> for VecVisitor<C> {
-        type Value = Vec<u8>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(formatter, "a {} encoded string", C::name())
-        }
-
-        fn visit_str<E: Error>(self, value: &str) -> Result<Self::Value, E> {
-            codec::decode::<C>(value.as_bytes()).map_err(E::custom)
-        }
-
-        fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Self::Value, E> {
-            codec::decode::<C>(value).map_err(E::custom)
-        }
+impl<C: Codec> OptionalVec<C> {
+    /// Serializes an optional byte vector using profile `C` for present values.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error reported by `serializer`.
+    #[inline]
+    pub fn serialize<S: Serializer>(
+        bytes: &Option<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        internal::serialize_option::<C, _, S>(bytes, serializer)
     }
 
-    deserializer.deserialize_str(VecVisitor::<C>(PhantomData))
+    /// Deserializes an optional encoded string into a byte vector using profile `C`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a deserialization error if a present value is not valid for the profile.
+    #[inline]
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<u8>>, D::Error> {
+        internal::deserialize_optional_vec::<C, D>(deserializer)
+    }
 }
 
-#[cfg(all(test, feature = "alloc"))]
+#[cfg(test)]
 mod tests {
-    use alloc::vec;
-    use alloc::vec::Vec;
-
     use serde::Deserialize;
     use serde::Serialize;
-
-    use crate::Base16Lower;
-    use crate::Base64;
-    use crate::Base64UrlUnpadded;
-
-    #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
-    struct Packet {
-        #[serde(with = "crate::Base64")]
-        payload: Vec<u8>,
-        #[serde(
-            serialize_with = "crate::Base16Lower::serialize",
-            deserialize_with = "crate::Base16Lower::deserialize_array"
-        )]
-        digest: [u8; 4],
-        #[serde(with = "crate::Base64UrlUnpadded")]
-        cursor: Vec<u8>,
-    }
-
-    #[test]
-    fn serde_with_profile_roundtrip() {
-        let packet = Packet {
-            payload: vec![0x66, 0x6f, 0x6f],
-            digest: [0xde, 0xad, 0xbe, 0xef],
-            cursor: vec![0xfb, 0xff],
-        };
-
-        let json = serde_json::to_string(&packet).unwrap();
-        assert_eq!(
-            json,
-            r#"{"payload":"Zm9v","digest":"deadbeef","cursor":"-_8"}"#
-        );
-
-        let decoded: Packet = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded, packet);
-    }
-
-    #[test]
-    fn serde_rejects_invalid_length_and_data() {
-        let bad_len = r#"{"payload":"Zm9v","digest":"dead","cursor":"-_8"}"#;
-        assert!(serde_json::from_str::<Packet>(bad_len).is_err());
-
-        let bad_char = r#"{"payload":"Zm!v","digest":"deadbeef","cursor":"-_8"}"#;
-        assert!(serde_json::from_str::<Packet>(bad_char).is_err());
-
-        let _ = (Base64::new(), Base16Lower::new(), Base64UrlUnpadded::new());
-    }
-}
-
-#[cfg(all(test, not(feature = "alloc")))]
-mod tests_no_alloc {
-    use serde::Deserialize;
-    use serde::Serialize;
-
-    use crate::Base64;
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
-    struct Digest {
-        #[serde(
-            serialize_with = "Base64::serialize",
-            deserialize_with = "Base64::deserialize_array"
-        )]
-        bytes: [u8; 3],
+    struct Record {
+        #[serde(with = "crate::serde::Array::<crate::Base64, 1>")]
+        byte: [u8; 1],
+        #[serde(with = "crate::serde::Array::<crate::Base16Lower, 0>")]
+        empty: [u8; 0],
     }
 
     #[test]
-    fn fixed_array_serde_without_alloc() {
-        let digest = Digest { bytes: *b"foo" };
-        let wire = r#"{"bytes":"Zm9v"}"#;
-        assert_eq!(serde_json::to_string(&digest).unwrap(), wire);
-        assert_eq!(serde_json::from_str::<Digest>(wire).unwrap(), digest);
+    fn array_adapter_without_alloc() {
+        let record = Record {
+            byte: *b"f",
+            empty: [],
+        };
+        let json = r#"{"byte":"Zg==","empty":""}"#;
+        assert_eq!(serde_json::to_string(&record).unwrap(), json);
+        assert_eq!(serde_json::from_str::<Record>(json).unwrap(), record);
         for invalid in [
-            r#"{"bytes":"Zg=="}"#,
-            r#"{"bytes":"Zm9vYg=="}"#,
-            r#"{"bytes":"Zm!v"}"#,
+            r#"{"byte":"","empty":""}"#,
+            r#"{"byte":"Zm8=","empty":""}"#,
+            r#"{"byte":"!g==","empty":""}"#,
+            r#"{"byte":"Zh==","empty":""}"#,
+            r#"{"byte":"Zg","empty":""}"#,
+            r#"{"byte":"Zg==","empty":"00"}"#,
+            r#"{"byte":null,"empty":""}"#,
+            r#"{"byte":[102],"empty":""}"#,
         ] {
-            assert!(serde_json::from_str::<Digest>(invalid).is_err());
+            assert!(
+                serde_json::from_str::<Record>(invalid).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct OptionalRecord {
+        #[serde(default, with = "crate::serde::OptionalArray::<crate::Base64, 1>")]
+        byte: Option<[u8; 1]>,
+        #[serde(
+            default,
+            with = "crate::serde::OptionalArray::<crate::Base16Lower, 0>",
+            skip_serializing_if = "Option::is_none"
+        )]
+        empty: Option<[u8; 0]>,
+    }
+
+    #[test]
+    fn optional_array_without_alloc() {
+        for (record, json) in [
+            (
+                OptionalRecord {
+                    byte: None,
+                    empty: None,
+                },
+                r#"{"byte":null}"#,
+            ),
+            (
+                OptionalRecord {
+                    byte: Some(*b"f"),
+                    empty: Some([]),
+                },
+                r#"{"byte":"Zg==","empty":""}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&record).unwrap(), json);
+            assert_eq!(
+                serde_json::from_str::<OptionalRecord>(json).unwrap(),
+                record
+            );
+        }
+        assert_eq!(
+            serde_json::from_str::<OptionalRecord>("{}").unwrap(),
+            OptionalRecord {
+                byte: None,
+                empty: None
+            }
+        );
+        for invalid in [
+            r#"{"byte":""}"#,
+            r#"{"byte":"Zm8="}"#,
+            r#"{"byte":"!g=="}"#,
+            r#"{"byte":"Zh=="}"#,
+            r#"{"byte":"Zg"}"#,
+            r#"{"empty":"00"}"#,
+            r#"{"byte":false}"#,
+            r#"{"byte":[102]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<OptionalRecord>(invalid).is_err(),
+                "{invalid}"
+            );
         }
     }
 }

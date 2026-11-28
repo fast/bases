@@ -353,7 +353,7 @@ where
         bytes: &T,
         serializer: S,
     ) -> Result<S::Ok, S::Error> {
-        serde::serialize::<Self, T, S>(bytes, serializer)
+        serde::internal::serialize::<Self, T, S>(bytes, serializer)
     }
 
     /// Deserializes an encoded string into a fixed-size byte array with `serde`.
@@ -368,7 +368,7 @@ where
     pub fn deserialize_array<'de, D: Deserializer<'de>, const N: usize>(
         deserializer: D,
     ) -> Result<[u8; N], D::Error> {
-        serde::deserialize_array::<Self, D, N>(deserializer)
+        serde::internal::deserialize_array::<Self, D, N>(deserializer)
     }
 
     /// Deserializes an encoded string into a byte vector with `serde`.
@@ -381,7 +381,7 @@ where
     #[cfg_attr(docsrs, doc(cfg(all(feature = "serde", feature = "alloc"))))]
     #[inline]
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
-        serde::deserialize::<Self, D>(deserializer)
+        serde::internal::deserialize::<Self, D>(deserializer)
     }
 }
 
