@@ -18,6 +18,9 @@ use bases::policy;
 use bases::serde::Array;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_test::Token;
+use serde_test::assert_de_tokens;
+use serde_test::assert_tokens;
 
 type DigestHex = Array<Base16Lower, 4>;
 
@@ -141,4 +144,29 @@ fn optional_fields_require_default_to_accept_missing_values() {
     for json in ["{}", r#"{"payload":null}"#, r#"{"digest":null}"#] {
         assert!(serde_json::from_str::<Record>(json).is_err(), "{json}");
     }
+}
+
+#[test]
+fn optional_adapters_preserve_serde_option_tokens() {
+    #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct MaybePayload(
+        #[serde(with = "bases::serde::OptionalVec::<bases::Base64>")] Option<Vec<u8>>,
+    );
+
+    #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
+    #[serde(transparent)]
+    struct MaybeDigest(
+        #[serde(with = "bases::serde::OptionalArray::<bases::Base16Lower, 1>")] Option<[u8; 1]>,
+    );
+
+    let payload = MaybePayload(Some(b"f".to_vec()));
+    assert_tokens(&payload, &[Token::Some, Token::Str("Zg==")]);
+    assert_de_tokens(&payload, &[Token::Some, Token::BorrowedBytes(b"Zg==")]);
+    assert_tokens(&MaybePayload(None), &[Token::None]);
+
+    let digest = MaybeDigest(Some([0xde]));
+    assert_tokens(&digest, &[Token::Some, Token::Str("de")]);
+    assert_de_tokens(&digest, &[Token::Some, Token::Bytes(b"de")]);
+    assert_tokens(&MaybeDigest(None), &[Token::None]);
 }

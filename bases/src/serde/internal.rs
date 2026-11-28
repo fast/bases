@@ -195,10 +195,6 @@ mod tests {
     use serde::Deserialize;
     use serde::Serialize;
 
-    use crate::Base16Lower;
-    use crate::Base64;
-    use crate::Base64UrlUnpadded;
-
     #[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
     struct Packet {
         #[serde(with = "crate::Base64")]
@@ -237,8 +233,6 @@ mod tests {
 
         let bad_char = r#"{"payload":"Zm!v","digest":"deadbeef","cursor":"-_8"}"#;
         assert!(serde_json::from_str::<Packet>(bad_char).is_err());
-
-        let _ = (Base64::new(), Base16Lower::new(), Base64UrlUnpadded::new());
     }
 }
 
